@@ -1,0 +1,7 @@
+/target
+/desktop/src-tauri/target
+/desktop/node_modules
+/backend/config.toml
+*.log
+.DS_Store
+Thumbs.db

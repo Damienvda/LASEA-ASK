@@ -1,0 +1,6 @@
+backend/config.toml
+backend/target
+desktop/src-tauri/target
+desktop/node_modules
+.git
+*.log

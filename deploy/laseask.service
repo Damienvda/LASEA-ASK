@@ -1,0 +1,19 @@
+[Unit]
+Description=LASEASK backend
+After=network.target
+
+[Service]
+Type=simple
+User=laseask
+Group=laseask
+WorkingDirectory=/opt/laseask
+Environment=LASEASK_CONFIG=/opt/laseask/config.toml
+ExecStart=/opt/laseask/laseask-backend
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/laseask
+
+[Install]
+WantedBy=multi-user.target

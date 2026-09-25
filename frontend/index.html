@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LASEASK</title>
+<link rel="stylesheet" href="style.css" />
+<!-- Markdown rendering for replies. Optional: if the CDN is unreachable, replies show as plain text. -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar" aria-label="Settings">
+    <div class="sidebar-head">
+      <span id="brand"><span class="brand-mark">◆</span> LASEASK</span>
+      <button id="close-sidebar" class="icon-btn only-mobile" aria-label="Close settings">✕</button>
+    </div>
+
+    <button id="new-chat-btn" class="new-chat">＋ New chat</button>
+
+    <section class="panel">
+      <h2>AI</h2>
+      <div id="provider-buttons" class="provider-grid" role="radiogroup" aria-label="AI provider"></div>
+      <label class="field">
+        <span>Model</span>
+        <input id="model-input" type="text" spellcheck="false" autocomplete="off" />
+      </label>
+    </section>
+
+    <section class="panel">
+      <h2>Tools (MCP)</h2>
+      <div id="mcp-list" class="mcp-list"></div>
+      <p id="mcp-hint" class="hint" hidden></p>
+      <label id="mcp-only-label" class="switch" title="Force the AI to consult a selected MCP tool before answering">
+        <input type="checkbox" id="mcp-only-toggle" />
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span>MCP only</span>
+      </label>
+    </section>
+
+    <p class="sidebar-foot">Conversations are stored in this browser only.</p>
+  </aside>
+  <div id="backdrop" hidden></div>
+
+  <div id="main">
+    <header id="mobile-bar" class="only-mobile">
+      <button id="open-sidebar" class="icon-btn" aria-label="Open settings">☰</button>
+      <span id="mobile-title"></span>
+    </header>
+
+    <main id="messages">
+      <div id="empty-state">
+        <div class="empty-mark">◆</div>
+        <h1>How can I help?</h1>
+        <p id="empty-sub"></p>
+      </div>
+    </main>
+
+    <footer id="composer-wrap">
+      <div id="composer">
+        <textarea id="input" placeholder="Message LASEASK..." rows="1"></textarea>
+        <button id="send-btn" class="send" aria-label="Send">↑</button>
+      </div>
+      <div id="composer-meta"></div>
+    </footer>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

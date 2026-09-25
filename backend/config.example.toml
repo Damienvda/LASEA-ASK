@@ -1,0 +1,31 @@
+default_provider = "anthropic"
+
+[server]
+host = "0.0.0.0"
+port = 8787
+
+# Optional: serve HTTPS directly using a cert from Let's Encrypt (via deploy/tls/request-cert.sh).
+# Off by default (plain HTTP). See deploy/tls/README.md.
+[tls]
+enabled = false
+cert_path = "/etc/letsencrypt/live/your-hostname/fullchain.pem"
+key_path = "/etc/letsencrypt/live/your-hostname/privkey.pem"
+
+[providers.anthropic]
+api_key = "sk-ant-REPLACE-ME"
+default_model = "claude-sonnet-4-5"
+
+[providers.openai]
+api_key = "sk-REPLACE-ME"
+default_model = "gpt-4.1"
+
+[providers.mistral]
+api_key = "REPLACE-ME"
+default_model = "mistral-large-latest"
+
+# Optional: MCP servers whose tools get made available to the model (anthropic, openai, mistral).
+# Each entry's key becomes the tool name prefix, e.g. "fortianalyzer" + tool "get_alerts" is
+# exposed to the model as "fortianalyzer__get_alerts". Add as many [mcp.<name>] blocks as you like.
+[mcp.fortianalyzer]
+url = "https://REPLACE-WITH-YOUR-MCP-URL/mcp"
+bearer_token = "REPLACE-ME"
