@@ -129,9 +129,11 @@ async fn connect_mcp_servers(
                     }
                     clients.insert(name.clone(), client);
                 }
-                Err(e) => tracing::warn!("MCP '{name}': connected but tools/list failed: {e}"),
+                // `{e:#}` prints the whole cause chain (e.g. "... error trying to connect: dns
+                // error: ..."), not just reqwest's generic "error sending request" at the top.
+                Err(e) => tracing::warn!("MCP '{name}': connected but tools/list failed: {e:#}"),
             },
-            Err(e) => tracing::warn!("MCP '{name}': failed to initialize, skipping: {e}"),
+            Err(e) => tracing::warn!("MCP '{name}': failed to initialize, skipping: {e:#}"),
         }
     }
 

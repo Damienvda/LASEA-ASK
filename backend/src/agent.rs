@@ -271,7 +271,7 @@ pub async fn call_mcp_tool(
     match mcp_clients.get(server) {
         Some(mcp) => match mcp.call_tool(tool, input).await {
             Ok(text) => truncate_tool_result(text),
-            Err(e) => format!("Error calling tool: {e}"),
+            Err(e) => format!("Error calling tool: {e:#}"),
         },
         None => format!("Error: no MCP server registered for '{server}'"),
     }
