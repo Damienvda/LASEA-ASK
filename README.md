@@ -1,68 +1,49 @@
 # LASEASK
 
-A personal multi-provider LLM chat interface:
+A self-hosted, multi-provider AI chat interface:
 
-- **`backend/`** — a Rust (Axum) web service that serves a small chat UI and proxies chat requests
-  to whichever LLM provider you pick (Anthropic, OpenAI, ...), streaming the reply back live
-- **`frontend/`** — the plain HTML/CSS/JS chat UI, served by the backend (no build step)
-- **`deploy/`** — systemd unit + Docker option for running the backend on Ubuntu
+- **`backend/`**: a Rust (Axum) web service. It serves the chat UI and forwards your messages to
+  the AI you pick (Claude, GPT or Mistral), streaming the reply back live.
+- **`frontend/`**: the chat UI (plain HTML/CSS/JS, no build step), served by the backend.
+- **`deploy/`**: the systemd service file and the HTTPS (Let's Encrypt) tooling.
 
-You bring your own API key(s), one per provider, entered once in the server's config file. There is
-**no login system** — the backend is meant to sit behind your firewall, reachable only to a handful
-of trusted IPs, and access control is handled there instead.
+You bring your own API key(s), entered once in the server's config file. There is **no login
+system**: the server must only be reachable from trusted machines, and access control is done at
+the firewall.
 
-Optionally, the backend can also connect to **MCP servers** (e.g. a FortiAnalyzer MCP endpoint) and
-give Claude tool access to them, the same way tools work in Claude Code — see step 3b.
-
-This guide walks through everything from a clean machine to a working chat: installing tools,
-configuring keys, running the backend and deploying it. You then use it from any browser.
+The backend can also connect to **MCP servers** (e.g. a FortiAnalyzer MCP endpoint) so the AI can
+call their tools, the same way tools work in Claude Code. In the UI you pick the AI with a button
+and tick which MCP servers it may use.
 
 ---
 
-## 1. Install prerequisites
+## Which guide do I follow?
 
-### On your dev machine (Windows, for building/testing)
+There are two ways to run LASEASK on an Ubuntu server. They are **separate**: pick one, and only
+ever follow the guides for that one.
 
-- **Rust** — https://rustup.rs, or:
-  ```powershell
-  winget install Rustlang.Rustup
-  ```
-  Then restart your terminal and confirm: `cargo --version`
+| | Docker | Bare metal (systemd) |
+|---|---|---|
+| What runs | A Docker container | A normal Linux service |
+| Rust on the server | Not needed (compiled inside Docker) | Installed on the server |
+| Config file | `~/LASEASK/backend/config.toml` | `/opt/laseask/config.toml` |
+| Logs | `docker logs -f laseask` | `sudo journalctl -u laseask -f` |
+| Restart | `docker restart laseask` | `sudo systemctl restart laseask` |
+| **First install** | **Section 2** | **Section 4** |
+| **Update to a new version** | **Section 3** | **Section 5** |
 
-- **Git** — you're already using GitHub Desktop, which is enough for cloning/pushing. Command-line
-  `git` isn't required for anything in this guide.
+**Not sure which one your server uses?** On the server, run `docker ps`: if you see a `laseask`
+line, it's Docker. Otherwise run `systemctl status laseask`: if it says `active (running)`, it's
+bare metal.
 
-### On the Ubuntu server (for deployment)
-
-Either:
-- **Rust** (to build the binary directly on the server), via https://rustup.rs, or
-- **Docker**, if you'd rather build/run as a container (see step 5, Option B)
-
----
-
-## 2. Get the code
-
-Clone/pull the repo with GitHub Desktop as usual:
-
-```
-https://github.com/<your-org-or-user>/LASEASK
-```
-
-Everything below assumes your local checkout path, e.g.
-`C:\Users\<you>\...\GitHub\LASEASK`.
+Both guides use section 1 for the config file content.
 
 ---
 
-## 3. Configure the backend
+## 1. The config file (both installs)
 
-Copy the example config and fill in your real API key(s):
-
-```powershell
-cd backend
-Copy-Item config.example.toml config.toml
-```
-
-Edit `backend/config.toml`:
+The config file holds your API keys and settings. It is **never** in git (it's gitignored): each
+install guide tells you where to create it, from `backend/config.example.toml`.
 
 ```toml
 default_provider = "anthropic"
@@ -70,7 +51,6 @@ default_provider = "anthropic"
 [server]
 host = "0.0.0.0"
 port = 8787
-static_dir = "frontend"     # relative to where the binary runs — see step 5 for deployment layout
 
 [providers.anthropic]
 api_key = "sk-ant-your-real-key"
@@ -83,250 +63,161 @@ default_model = "gpt-4.1"
 [providers.mistral]
 api_key = "your-real-mistral-key"
 default_model = "mistral-large-latest"
-```
 
-Notes:
-- You only need a `[providers.X]` section for providers you actually plan to use — delete the ones
-  you don't have a key for. Just make sure `default_provider` points at one that exists.
-- Get an Anthropic key at https://console.anthropic.com (Settings → API Keys) and an OpenAI key at
-  https://platform.openai.com/api-keys, and a Mistral key at https://console.mistral.ai/api-keys
-  (other model names, e.g. `mistral-small-latest` or `codestral-latest`, can be typed in the UI's
-  model box). Billing for these is separate from any Claude.ai/ChatGPT
-  subscription — this app calls the pay-per-token API, not a consumer subscription.
-- `backend/config.toml` is gitignored on purpose. **Never commit it** — it holds your real keys.
-
----
-
-## 3b. Connect an MCP server (optional — tool use)
-
-If you want the model (Claude, GPT or Mistral) to be able to call tools — e.g. your FortiAnalyzer MCP server, the same one
-Claude Code itself uses — add an `[mcp.<name>]` block per server:
-
-```toml
+# Optional: one block per MCP server whose tools the AI may use.
 [mcp.fortianalyzer]
 url = "https://your-mcp-server/mcp"
 bearer_token = "your-bearer-token"
 ```
 
-- The key you pick (`fortianalyzer` above) becomes the prefix Claude sees on every tool from that
-  server, e.g. a `get_alerts` tool shows up as `fortianalyzer__get_alerts`. You can add as many
-  `[mcp.X]` blocks as you have servers.
-- MCP tools are offered to every tool-capable provider: `anthropic` (Claude's tool-use format,
-  `backend/src/agent.rs`) and `openai` / `mistral` (the OpenAI-compatible function-calling format,
-  `backend/src/agent_openai.rs`). Make sure the model you pick supports function calling — e.g.
-  `mistral-large-latest`, `mistral-medium-latest`, `mistral-small-latest`.
-- On startup the backend connects to each configured server, lists its tools, and logs how many it
-  found (`MCP 'fortianalyzer': connected, N tool(s) available`). A server that's unreachable is
-  logged as a warning and skipped — it won't stop the rest of the app from starting.
-- In the UI's sidebar, **Tools (MCP)** lists every configured server with a checkbox, a status
-  dot (green = connected) and its tool count. Only the ticked servers' tools are offered to the
-  AI for your next message (the request's `mcp_servers` field); untick them all for a plain chat.
-  A server that failed to connect is shown greyed out as "offline". The list comes from
-  `GET /api/providers`' `mcp_servers` field.
-- When the model uses a tool mid-answer, a small "🔧 fortianalyzer__X" chip appears above the
-  reply, and the answer keeps streaming once the tool result comes back.
-- The **"MCP only"** switch forces the model to actually call a tool before answering, instead of
-  possibly answering from its own knowledge — useful when you specifically want a grounded,
-  tool-backed answer. It's only enabled when the selected AI is Claude, GPT or Mistral and at
-  least one ticked server has tools; the backend rejects it under any other condition.
-- Where to find your existing FortiAnalyzer MCP URL/token if you already use it in Claude Code:
-  it's in `~/.claude.json`, under your project's `mcpServers.fortianalyzer` entry (`url` and the
-  `Authorization: Bearer ...` header). Copy those two values into `config.toml` — don't paste the
-  token anywhere that gets committed.
+### AI providers
+
+- Keep a `[providers.X]` block only for the AIs you have a key for, and delete the others.
+  `default_provider` must name one that exists.
+- Each block becomes a button in the sidebar's **AI** section.
+- Keys: Anthropic at https://console.anthropic.com (Settings → API Keys), OpenAI at
+  https://platform.openai.com/api-keys, Mistral at https://console.mistral.ai/api-keys. These are
+  pay-per-use API keys, billed separately from any Claude.ai or ChatGPT subscription.
+- `default_model` is the model used by default. Any other model name (e.g. `mistral-medium-latest`,
+  `mistral-small-latest`) can be typed in the UI's **Model** box.
+
+### MCP servers (optional)
+
+- The name after `mcp.` (`fortianalyzer` above) becomes the prefix of every tool from that server,
+  e.g. `fortianalyzer__get_alerts`. Add as many `[mcp.X]` blocks as you have servers.
+- Tools work with Claude, GPT and Mistral. Pick a model that supports function calling (e.g.
+  `mistral-large-latest`, `mistral-medium-latest`, `mistral-small-latest`).
+- At start-up the backend connects to each server and logs
+  `MCP 'fortianalyzer': connected, N tool(s) available`. A server that's unreachable is logged as a
+  warning and skipped: the rest of the app still starts.
+- In the UI's **Tools (MCP)** section, each server has a checkbox, a status dot (green = connected)
+  and its tool count. Only the ticked servers' tools are offered to the AI. An unreachable server
+  shows greyed out as "offline".
+- When the AI uses a tool, a "🔧 fortianalyzer__X" chip appears above its reply.
+- The **MCP only** switch forces the AI to call a tool before answering, instead of answering from
+  its own knowledge. It's only available with Claude, GPT or Mistral and at least one ticked server.
+- Already using the FortiAnalyzer MCP in Claude Code? Its URL and token are in `~/.claude.json` on
+  your PC, under `mcpServers.fortianalyzer` (`url` and the `Authorization: Bearer ...` header).
+
+### HTTPS (optional)
+
+Off by default (plain HTTP). To serve HTTPS with a real hostname, see section 6.
 
 ---
 
-## 4. Run it locally (sanity check before deploying)
+## 2. First install with Docker (beginner guide)
 
-```powershell
-cd backend
-cargo run --release
-```
+From a bare Ubuntu server to LASEASK running in Docker. About 15 minutes. Copy the commands one at a
+time, in order, and check the result after each step. Rust is **not** installed on the server: the
+code is compiled inside Docker.
 
-You should see a log line like:
+### Step 1: Connect to the server
 
-```
-LASEASK backend listening on http://0.0.0.0:8787 (static: frontend)
-```
-
-Open http://localhost:8787 in a browser — you should get the chat UI, with your configured
-provider(s) as buttons in the sidebar's **AI** section. Send a message and confirm you get a streamed reply.
-
-If it fails to start, the most common cause is `config.toml` missing or malformed — the error
-message will say which file it looked for and why.
-
----
-
-## 5. Deploy the backend on your Ubuntu server
-
-Full details, including firewall lockdown, are in **`deploy/README.md`**. Short version:
-
-### Option A — plain systemd service
+From a terminal on your PC (PowerShell works):
 
 ```bash
-# on the server
-sudo useradd --system --home /opt/laseask --shell /usr/sbin/nologin laseask
-sudo mkdir -p /opt/laseask
+ssh <your-user>@<server-ip>
 ```
 
-> **Warning:** a binary compiled on Windows is a Windows `.exe` and will not run on Ubuntu. Either
-> build on the server itself (the simplest: install Rust and clone the repo as in section 8,
-> step 3, run `cargo build --release` in `backend/`, then use `cp` on the server instead of `scp`),
-> or cross-compile for `x86_64-unknown-linux-gnu`. The `scp` commands below assume you already
-> have a **Linux** build.
+Type the password when asked (nothing shows while you type, that's normal). Every command below
+runs **on the server**.
 
-```powershell
-# from your dev machine, with a Linux build of the binary
-scp backend\target\release\laseask-backend  server:/opt/laseask/
-scp -r frontend                             server:/opt/laseask/frontend
-scp backend\config.toml                     server:/opt/laseask/config.toml
-```
-
-```bash
-# on the server
-sudo cp deploy/laseask.service /etc/systemd/system/laseask.service
-sudo chown -R laseask:laseask /opt/laseask
-sudo systemctl daemon-reload
-sudo systemctl enable --now laseask
-sudo systemctl status laseask
-
-# lock the port down to trusted hosts only
-sudo ufw allow from <your-desktop-ip> to any port 8787 proto tcp
-```
-
-### Option B — Docker, built straight from the GitHub repo
-
-This is the self-contained path: start from a bare Ubuntu server with nothing on it, end with the
-app running in Docker, having built directly from `github.com/Damienvda/LASEA-ASK` — no scp'ing a
-compiled binary over from your dev machine. Rust itself is never installed on the server: the
-Dockerfile's build stage pulls a `rust:1-slim` image and compiles the backend *inside* that
-throwaway build container, so `docker build` is the only "compiler install" step there is.
-
-**1. Install Docker, with BuildKit** (if it's not already on the server). The Dockerfile uses
-BuildKit cache mounts to make rebuilds fast, so this isn't optional — plain `docker build` (the
-old, non-BuildKit engine) can't build it at all:
+### Step 2: Install Docker
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
-sudo apt-get update && sudo apt-get install -y docker-buildx-plugin
+sudo apt-get update && sudo apt-get install -y docker-buildx-plugin git
 sudo usermod -aG docker "$USER"
-# log out and back in (or `newgrp docker`) for the group change to take effect
 ```
 
-With `docker-buildx-plugin` installed, plain `docker build` automatically runs on BuildKit under
-the hood — no different command, no deprecation warning, and it's what makes the cache-mount
-speedup in the Dockerfile work.
-
-**2. Install git and clone the repo:**
+Then **log out and back in** (`exit`, then `ssh` again) so the last line takes effect, and check:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y git
-git clone https://github.com/Damienvda/LASEA-ASK.git LASEASK
-cd LASEASK
+docker run --rm hello-world
 ```
 
-**3. Create the real config** (this file is gitignored — it doesn't come from the clone):
+It must print `Hello from Docker!`. The `docker-buildx-plugin` package is required: the build
+uses BuildKit features that the old Docker build engine doesn't have.
+
+### Step 3: Download the code
+
+```bash
+cd ~
+git clone https://github.com/Damienvda/LASEA-ASK.git LASEASK
+cd ~/LASEASK
+```
+
+The code is now in `~/LASEASK`. **Always run the next steps from this folder.**
+
+### Step 4: Create the config file
 
 ```bash
 cp backend/config.example.toml backend/config.toml
-nano backend/config.toml     # fill in your provider API key(s), and [mcp.*] / [tls] if you use them
+chmod 600 backend/config.toml
+nano backend/config.toml
 ```
 
-See step 3 and 3b above for what goes in it.
+Fill it in as explained in section 1 (API keys, MCP servers). In `nano`: **Ctrl+O** then Enter to
+save, **Ctrl+X** to quit.
 
-`.dockerignore` at the repo root keeps `backend/config.toml` out of the build entirely, so even
-though it now sits right next to the Dockerfile, it never ends up baked into the image — it's only
-ever supplied at container-run time via the `-v` mount in step 5.
+`chmod 600` makes the file readable only by you. The file is never built into the Docker image: it
+is plugged into the container when it starts (the `-v` in step 6).
 
-**4. Build the image** — this is the step that compiles Rust, entirely inside Docker:
+### Step 5: Build the image
 
 ```bash
 docker build -f backend/Dockerfile -t laseask-backend .
 ```
 
-**5. Run it:**
+- **Don't forget the final `.`**: it means "the current folder", which must be `~/LASEASK`.
+- The first build takes several minutes (it compiles Rust). It succeeded if it ends with
+  `naming to docker.io/library/laseask-backend` and no red `ERROR`.
+
+### Step 6: Start the container
 
 ```bash
 docker run -d --name laseask -p 8787:8787 \
-  -v "$(pwd)/backend/config.toml:/app/config.toml:ro" \
+  -v "$HOME/LASEASK/backend/config.toml:/app/config.toml:ro" \
   --restart unless-stopped \
   laseask-backend
 ```
 
-**6. Verify and lock it down:**
+- Paste the command as a whole: the `\` at the end of a line means "continued on the next line".
+- It prints a long ID: that's success.
+- `--restart unless-stopped` restarts the app automatically after a crash or a server reboot.
+
+### Step 7: Check it works
 
 ```bash
-docker logs -f laseask                 # confirm it started, and check the MCP connection log line
-sudo ufw allow from <your-desktop-ip> to any port 8787 proto tcp
+docker ps
+docker logs -f laseask
 ```
 
-**Updating later**: see **section 7** for the full step-by-step guide (push from your PC, pull on
-the server, rebuild, swap the container, check it, roll back if needed).
+- `docker ps` must show `laseask` with a status like `Up 10 seconds`. `Restarting` means the app
+  crashes at start-up: read the logs.
+- In the logs, look for `LASEASK backend listening on http://0.0.0.0:8787` and, if you configured
+  MCP, `MCP 'fortianalyzer': connected, N tool(s) available`.
+- **Ctrl+C** stops reading the logs (not the app).
+- Open `http://<server-ip>:8787` in your browser and send a test message.
 
-Either option, you should end up able to open `http://<server-ip>:8787` from your desktop and get
-the same chat UI as the local test in step 4. For HTTPS with Docker, see the note in
-`deploy/README.md`'s HTTPS section — the cert-request tooling assumes the systemd layout by
-default and needs a small path adjustment for Docker.
+### Step 8: Restrict who can reach it
 
----
+There is no login, so only trusted machines must reach port 8787. **With Docker, `ufw` does not
+protect this port**: Docker writes its own firewall rules, which bypass `ufw`. Restrict access on
+the network firewall instead (e.g. a FortiGate policy that only allows your admin machines to reach
+`<server-ip>:8787`).
 
-## 5b. HTTPS with a real hostname (optional)
-
-Want `https://laseask.yourdomain.com` instead of a bare IP over plain HTTP? `deploy/tls/` requests
-a Let's Encrypt certificate via a DNS-01 challenge — no inbound port 80/443 needed, so it fits the
-firewall-restricted setup above — using your DNS provider's API (OVH out of the box, plus
-Cloudflare/Route53/DigitalOcean; more can be added). Full walkthrough: `deploy/tls/README.md`.
-Short version:
-
-```bash
-chmod +x deploy/tls/*.sh
-deploy/tls/install-certbot.sh ovh
-# fill in deploy/tls/credentials.ovh.example.ini -> /etc/letsencrypt/ovh.ini
-deploy/tls/request-cert.sh --provider ovh --email you@lasea.com \
-  --credentials /etc/letsencrypt/ovh.ini laseask.lasea.com
-```
-
-Then set `[tls] enabled = true` in `config.toml` (the script prints the exact `cert_path`/
-`key_path`) and restart the backend once. Renewals after that are automatic and self-updating —
-nothing more to run.
+To update later, follow **section 3**.
 
 ---
 
-## 6. Day-to-day use
+## 3. Updating a Docker install (beginner guide)
 
-- **Add a provider later**: add a `[providers.X]` block to `config.toml` on the server, restart the
-  service (`sudo systemctl restart laseask` or `docker restart laseask`) — it'll show up as a new
-  button in the sidebar's **AI** section automatically.
-- **Rotate a key**: same — edit `config.toml`, restart.
-- **Add/remove an MCP server**: add, edit, or delete an `[mcp.X]` block, restart the service —
-  check the startup logs (`journalctl -u laseask -f` or `docker logs -f laseask`) to confirm it
-  connected and see how many tools it found.
-- **Update the app**: Docker → follow **section 7**. Bare metal / systemd → follow **section 8**.
-- **Conversation history** lives in the browser's `localStorage`, per device/browser — it is not
-  stored server-side.
+Use this every time the code changed and you want the server to run the new version. About 5
+minutes.
 
----
-
-## Updating the app: which guide?
-
-Two separate step-by-step guides, depending on how the server runs the app. Follow **only one**.
-
-| The server runs LASEASK with... | How to tell | Guide |
-|---|---|---|
-| **Docker** (step 5, Option B) | `docker ps` shows a `laseask` line | **Section 7** |
-| **Bare metal / systemd** (step 5, Option A) | `systemctl status laseask` shows `active (running)` | **Section 8** |
-
----
-
-## 7. Updating the app: Docker (beginner guide)
-
-Use this every time the code changed (a fix, a new feature) and you want the server to run the new
-version. It takes about 5 minutes. You don't need to know Rust or Docker: just copy the commands one
-at a time, in order, and check the result after each step.
-
-**Only the config changed** (new API key, new model, new `[providers.X]` or `[mcp.X]` block)? You
-don't need this guide: edit `backend/config.toml` on the server, then run `docker restart laseask`.
-The config file is read from the server's disk at start-up, not built into the image.
+**Only the config changed** (new API key, new model, new `[providers.X]` or `[mcp.X]` block)? Skip
+this guide: edit `~/LASEASK/backend/config.toml` on the server, then run `docker restart laseask`.
 
 ### The big picture
 
@@ -337,29 +228,23 @@ The config file is read from the server's disk at start-up, not built into the i
 
 - **Image** (`laseask-backend`): the compiled app, like an installer. Built by `docker build`.
 - **Container** (`laseask`): a running copy of the image. Started by `docker run`.
-- Rebuilding the image does **not** change the running container. You have to stop the old
-  container and start a new one from the new image (steps 5 and 6).
+- Rebuilding the image does **not** change the running container: you have to replace the
+  container (step 6).
 
 ### Step 1: Send your changes to GitHub (on your PC)
 
-1. Open **GitHub Desktop** and select the `LASEASK` repository.
+1. Open **GitHub Desktop** and select the repository.
 2. On the left, check the list of changed files. **`backend/config.toml` must never appear here.**
-   It holds your API keys and is gitignored, so it normally doesn't.
-3. Bottom left: type a short summary (e.g. `Cap MCP tool result size`), click **Commit to main**.
+3. Bottom left: type a short summary, click **Commit**.
 4. Top: click **Push origin**. Wait until the button goes back to **Fetch origin**.
 
 If someone else pushed the change, skip this step.
 
 ### Step 2: Connect to the server
 
-From a terminal on your PC (PowerShell works):
-
 ```bash
 ssh <your-user>@<server-ip>
 ```
-
-Type the password when asked (nothing shows while you type, that's normal). The prompt now shows
-something like `<your-user>@<server>:~$`: every command below runs **on the server**.
 
 ### Step 3: Go to the project folder
 
@@ -368,8 +253,7 @@ cd ~/LASEASK
 pwd
 ```
 
-`pwd` must print `/home/<your-user>/LASEASK`. **Always run the next steps from this folder**: the
-build and the config mount both depend on it.
+`pwd` must print `/home/<your-user>/LASEASK`. **Run the next steps from this folder.**
 
 ### Step 4: Download the new code
 
@@ -378,34 +262,21 @@ git status
 git pull
 ```
 
-- `git status` should say `nothing to commit, working tree clean` (or only list untracked files).
-- `git pull` prints the files that changed, or `Already up to date.` If it says `Already up to
-  date` but you expected changes, you probably forgot to **Push** in step 1.
+- `git status` should say `nothing to commit, working tree clean`.
+- `git pull` lists the changed files, or `Already up to date.` (did you forget **Push** in step 1?).
+- **Error `Your local changes ... would be overwritten by merge`**: someone edited a file directly
+  on the server. Run `git stash`, then `git pull` again. Your `config.toml` is not affected.
 
-**Error: `Your local changes to the following files would be overwritten by merge`**: someone
-edited a file directly on the server. To throw those server-side edits away and take GitHub's
-version (your `config.toml` is gitignored, so it's not affected):
-
-```bash
-git stash
-git pull
-```
-
-### Step 5: Build the new image (keep a backup of the old one first)
+### Step 5: Build the new image (keeping a backup of the old one)
 
 ```bash
 docker tag laseask-backend laseask-backend:previous
 docker build -f backend/Dockerfile -t laseask-backend .
 ```
 
-- The first line keeps the current image under the name `laseask-backend:previous`, so you can go
-  back to it if the new version is broken (see "Rollback" below).
-- **Don't forget the final `.`** in the build command. It means "the current folder", which must
-  be the repo root (step 3).
-- The build takes from about 30 seconds to several minutes (the Rust compile). It succeeded if it
-  ends with `naming to docker.io/library/laseask-backend` and no red `ERROR`.
+- The first line saves the current image as `laseask-backend:previous`, for the rollback below.
+- **Don't forget the final `.`**
 - **If the build fails, stop here.** The old container is still running and nothing is broken.
-  Copy the error and fix the code first.
 
 ### Step 6: Replace the running container
 
@@ -418,11 +289,8 @@ docker run -d --name laseask -p 8787:8787 \
   laseask-backend
 ```
 
-- `stop` + `rm` delete the old container (not the image, not your config).
-- `docker run` starts a new container from the image you just built. It prints a long ID: that's
-  success. The site is down for just a few seconds between `stop` and `run`.
-- Paste the `docker run` command as a whole: the `\` at the end of each line means "the command
-  continues on the next line".
+`stop` + `rm` delete the old container (not the image, not your config). The site is down for a
+few seconds only.
 
 ### Step 7: Check it works
 
@@ -431,28 +299,17 @@ docker ps
 docker logs -f laseask
 ```
 
-- `docker ps` must show a line for `laseask` with a status like `Up 10 seconds`. If the status is
-  `Restarting`, the app crashes at start-up: read the logs.
-- In the logs, look for:
-  - `LASEASK backend listening on http://0.0.0.0:8787`: the app started.
-  - `MCP 'fortianalyzer': connected, N tool(s) available`: the FortiAnalyzer tools are available.
-- Press **Ctrl+C** to stop reading the logs. This does **not** stop the app.
-- Open `http://<server-ip>:8787` in your browser (**Ctrl+F5** to bypass the browser cache) and send
-  a test message.
+Same checks as in section 2, step 7. In the browser, press **Ctrl+F5** to bypass the cache.
 
 ### Step 8 (optional): Clean up
-
-Old images pile up and use disk space. Once the new version works:
 
 ```bash
 docker image prune -f
 ```
 
-This removes unused, untagged images only. It keeps `laseask-backend` and `laseask-backend:previous`.
+Removes old unused images. It keeps `laseask-backend` and `laseask-backend:previous`.
 
 ### Rollback: the new version is broken
-
-Go back to the image saved in step 5:
 
 ```bash
 docker stop laseask
@@ -463,20 +320,20 @@ docker run -d --name laseask -p 8787:8787 \
   laseask-backend:previous
 ```
 
-Only the last `:previous` changes compared to step 6.
+Only the last `:previous` differs from step 6.
 
-### Common errors
+### Common errors (Docker)
 
 | Message | Cause | Fix |
 |---|---|---|
 | `The container name "/laseask" is already in use` | The old container still exists | `docker stop laseask && docker rm laseask`, then `docker run` again |
-| `"/frontend": not found` during the build | Build run from the wrong folder (e.g. from `backend/`) | `cd ~/LASEASK`, then build again |
+| `"/frontend": not found` during the build | Build run from the wrong folder (e.g. `backend/`) | `cd ~/LASEASK`, then build again |
 | `docker build requires 1 argument` | The final `.` is missing | Add ` .` at the end of the build command |
 | `permission denied ... docker.sock` | Your user isn't in the `docker` group | `sudo usermod -aG docker $USER`, log out and back in |
-| `Bind for 0.0.0.0:8787 failed: port is already allocated` | Another container or process uses port 8787 | `docker ps` to find it, stop it |
+| `Bind for 0.0.0.0:8787 failed: port is already allocated` | Something else uses port 8787 | `docker ps` to find it, stop it |
 | `could not read config file` in the logs | `config.toml` missing, or wrong path in `-v` | `ls ~/LASEASK/backend/config.toml` must list the file |
 | `default_provider 'X' has no matching [providers.X] section` | Config error | Fix `config.toml`, then `docker restart laseask` |
-| `mistral error 400 ... maximum context length` in the chat | The conversation (tool results included) is too long for the model | Start a new conversation, or ask for fewer/narrower tool calls |
+| `mistral error 400 ... maximum context length` in the chat | Conversation too long for the model | Start a new chat, or ask for fewer/narrower tool calls |
 
 ### Cheat sheet (once you're used to it)
 
@@ -493,39 +350,157 @@ docker logs -f laseask
 
 ---
 
-## 8. Updating the app: bare metal / systemd (beginner guide)
+## 4. First install on bare metal / systemd (beginner guide)
 
-Use this if the server runs LASEASK as a **systemd service** (step 5, Option A), not in Docker. It
-takes about 5-10 minutes. Copy the commands one at a time, in order, and check the result after
-each step.
+From a bare Ubuntu server to LASEASK running as a Linux service. About 20 minutes. Copy the
+commands one at a time, in order, and check the result after each step.
 
-**Only the config changed** (new API key, new model, new `[providers.X]` or `[mcp.X]` block)? You
-don't need this guide: edit `/opt/laseask/config.toml`, then run `sudo systemctl restart laseask`.
+Two folders are used on the server, don't mix them up:
+
+- **`~/LASEASK`**: the source code (git clone). You pull and compile here.
+- **`/opt/laseask`**: what actually runs: `laseask-backend` (the program), `frontend/` (the web
+  page) and `config.toml` (your keys). systemd starts the program from here, as a dedicated
+  `laseask` user.
+
+### Step 1: Connect to the server
+
+From a terminal on your PC (PowerShell works):
+
+```bash
+ssh <your-user>@<server-ip>
+```
+
+Every command below runs **on the server**.
+
+### Step 2: Install the build tools and Rust
+
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential git curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+cargo --version
+```
+
+- `build-essential` provides the C linker Rust needs. OpenSSL is not needed (the app uses rustls).
+- `cargo --version` must print something like `cargo 1.xx.x`. If it says `command not found`, log
+  out and back in, then try again.
+
+### Step 3: Download the code
+
+```bash
+cd ~
+git clone https://github.com/Damienvda/LASEA-ASK.git LASEASK
+```
+
+### Step 4: Compile
+
+```bash
+cd ~/LASEASK/backend
+cargo build --release
+```
+
+- The first build takes several minutes.
+- It succeeded if it ends with `Finished` and no red `error`. The program is now at
+  `~/LASEASK/backend/target/release/laseask-backend`.
+
+### Step 5: Create the service user and the install folder
+
+```bash
+sudo useradd --system --home /opt/laseask --shell /usr/sbin/nologin laseask
+sudo mkdir -p /opt/laseask
+```
+
+The `laseask` user can't log in: it only exists to run the service with minimal rights.
+
+### Step 6: Install the program and the web page
+
+```bash
+sudo cp ~/LASEASK/backend/target/release/laseask-backend /opt/laseask/laseask-backend
+sudo cp -r ~/LASEASK/frontend /opt/laseask/frontend
+```
+
+### Step 7: Create the config file
+
+```bash
+sudo cp ~/LASEASK/backend/config.example.toml /opt/laseask/config.toml
+sudo nano /opt/laseask/config.toml
+```
+
+Fill it in as explained in section 1 (API keys, MCP servers). In `nano`: **Ctrl+O** then Enter to
+save, **Ctrl+X** to quit.
+
+Then give everything to the `laseask` user, and make the config readable by it only:
+
+```bash
+sudo chown -R laseask:laseask /opt/laseask
+sudo chmod 600 /opt/laseask/config.toml
+```
+
+### Step 8: Install and start the service
+
+```bash
+sudo cp ~/LASEASK/deploy/laseask.service /etc/systemd/system/laseask.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now laseask
+```
+
+`enable --now` starts the service now **and** at every server boot.
+
+### Step 9: Check it works
+
+```bash
+sudo systemctl status laseask
+sudo journalctl -u laseask -f
+```
+
+- `status` must show **`active (running)`** in green. Press **q** to leave that screen.
+- In the logs, look for `LASEASK backend listening on http://0.0.0.0:8787` and, if you configured
+  MCP, `MCP 'fortianalyzer': connected, N tool(s) available`.
+- **Ctrl+C** stops reading the logs (not the app).
+- Open `http://<server-ip>:8787` in your browser and send a test message.
+
+### Step 10: Restrict who can reach it
+
+There is no login, so only trusted machines must reach port 8787. With `ufw` (the Ubuntu firewall):
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow from <your-desktop-ip> to any port 8787 proto tcp
+sudo ufw enable
+sudo ufw status
+```
+
+**Keep the `allow OpenSSH` line first**: enabling `ufw` without it cuts your own SSH connection.
+Add one `allow from` line per machine that needs access. Restricting on the network firewall
+(e.g. a FortiGate policy) as well is recommended.
+
+To update later, follow **section 5**.
+
+---
+
+## 5. Updating a bare-metal / systemd install (beginner guide)
+
+Use this every time the code changed and you want the server to run the new version. About 5-10
+minutes.
+
+**Only the config changed** (new API key, new model, new `[providers.X]` or `[mcp.X]` block)? Skip
+this guide: `sudo nano /opt/laseask/config.toml`, then `sudo systemctl restart laseask`.
 
 ### The big picture
 
 ```
  Your PC                   GitHub                    Ubuntu server
- (edit code) -- push -->   (stores the code) -- pull -->  ~/LASEASK   (source code, build here)
-                                                            | copy binary + frontend
+ (edit code) -- push -->   (stores the code) -- pull -->  ~/LASEASK    (source code, compile here)
+                                                            | copy program + web page
                                                             v
                                                           /opt/laseask (what systemd runs)
 ```
 
-Two folders on the server, don't mix them up:
-
-- **`~/LASEASK`**: the git clone. You pull and build here.
-- **`/opt/laseask`**: what actually runs. It contains `laseask-backend` (the program),
-  `frontend/` (the web page) and `config.toml` (your keys). systemd starts the program from here.
-
-**Always build on the server.** A `cargo build` on Windows produces a Windows `.exe`, which can't
-run on Ubuntu.
-
 ### Step 1: Send your changes to GitHub (on your PC)
 
-1. Open **GitHub Desktop** and select the `LASEASK` repository.
+1. Open **GitHub Desktop** and select the repository.
 2. On the left, check the list of changed files. **`backend/config.toml` must never appear here.**
-3. Bottom left: type a short summary, click **Commit to main**.
+3. Bottom left: type a short summary, click **Commit**.
 4. Top: click **Push origin**. Wait until the button goes back to **Fetch origin**.
 
 If someone else pushed the change, skip this step.
@@ -536,26 +511,7 @@ If someone else pushed the change, skip this step.
 ssh <your-user>@<server-ip>
 ```
 
-Every command below runs **on the server**.
-
-### Step 3 (first time only): Install the build tools and the source code
-
-Skip this step if `cargo --version` prints a version and `~/LASEASK` exists.
-
-```bash
-sudo apt-get update && sudo apt-get install -y build-essential git curl
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-cargo --version
-cd ~
-git clone https://github.com/Damienvda/LASEA-ASK.git LASEASK
-```
-
-- `build-essential` provides the C linker Rust needs. No OpenSSL is needed (the app uses rustls).
-- `cargo --version` must print something like `cargo 1.xx.x`. If it says `command not found`, log
-  out and back in, then try again.
-
-### Step 4: Download the new code
+### Step 3: Download the new code
 
 ```bash
 cd ~/LASEASK
@@ -568,21 +524,18 @@ git pull
 - **Error `Your local changes ... would be overwritten by merge`**: run `git stash`, then
   `git pull` again. This throws away edits made directly in the server's clone.
 
-### Step 5: Compile
+### Step 4: Compile
 
 ```bash
 cd ~/LASEASK/backend
 cargo build --release
 ```
 
-- The first build takes several minutes. Later builds only recompile what changed.
-- It succeeded if it ends with `Finished release [optimized] target(s)` (or
-  `Finished `release` profile`) and no red `error`.
-- The new program is now at `backend/target/release/laseask-backend`.
+- Later builds only recompile what changed, so they're faster than the first one.
 - **If the build fails, stop here.** The service is still running the old version and nothing is
-  broken. Copy the error and fix the code first.
+  broken.
 
-### Step 6: Back up the current version
+### Step 5: Back up the current version
 
 ```bash
 sudo cp /opt/laseask/laseask-backend /opt/laseask/laseask-backend.previous
@@ -590,9 +543,7 @@ sudo rm -rf /opt/laseask/frontend.previous
 sudo cp -r /opt/laseask/frontend /opt/laseask/frontend.previous
 ```
 
-This keeps the running version so you can go back to it (see "Rollback" below).
-
-### Step 7: Install the new version and restart
+### Step 6: Install the new version and restart
 
 ```bash
 sudo systemctl stop laseask
@@ -603,32 +554,23 @@ sudo chown -R laseask:laseask /opt/laseask
 sudo systemctl start laseask
 ```
 
-- The service is stopped first: Linux refuses to overwrite a program that's running (`Text file
-  busy`).
+- The service is stopped first: Linux refuses to overwrite a running program (`Text file busy`).
 - **`config.toml` is not touched**: it stays in `/opt/laseask`.
-- `chown` gives the files back to the `laseask` user that the service runs as. Without it, the
-  service can fail with `Permission denied`.
+- `chown` gives the files back to the `laseask` user. Without it, the service can fail with
+  `Permission denied`.
 - If `deploy/laseask.service` itself changed in the update (rare), also run:
   `sudo cp ~/LASEASK/deploy/laseask.service /etc/systemd/system/ && sudo systemctl daemon-reload`
 
-### Step 8: Check it works
+### Step 7: Check it works
 
 ```bash
 sudo systemctl status laseask
 sudo journalctl -u laseask -f
 ```
 
-- `status` must show **`active (running)`** in green. Press **q** to leave that screen.
-- In the logs, look for:
-  - `LASEASK backend listening on http://0.0.0.0:8787`: the app started.
-  - `MCP 'fortianalyzer': connected, N tool(s) available`: the FortiAnalyzer tools are available.
-- Press **Ctrl+C** to stop reading the logs. This does **not** stop the app.
-- Open `http://<server-ip>:8787` in your browser (**Ctrl+F5** to bypass the cache) and send a test
-  message.
+Same checks as in section 4, step 9. In the browser, press **Ctrl+F5** to bypass the cache.
 
 ### Rollback: the new version is broken
-
-Put back the version saved in step 6:
 
 ```bash
 sudo systemctl stop laseask
@@ -639,18 +581,18 @@ sudo chown -R laseask:laseask /opt/laseask
 sudo systemctl start laseask
 ```
 
-### Common errors
+### Common errors (bare metal)
 
 | Message | Cause | Fix |
 |---|---|---|
-| `cargo: command not found` | Rust not installed, or the shell doesn't know it yet | Step 3, or `source "$HOME/.cargo/env"` |
+| `cargo: command not found` | Rust not installed, or the shell doesn't know it yet | Section 4 step 2, or `source "$HOME/.cargo/env"` |
 | `linker 'cc' not found` | C build tools missing | `sudo apt-get install -y build-essential` |
 | `Text file busy` on `cp` | The service is still running | `sudo systemctl stop laseask`, then copy again |
 | `Permission denied` in the logs | Files not owned by the `laseask` user | `sudo chown -R laseask:laseask /opt/laseask`, restart |
-| `exec format error` / `status=203/EXEC` | A Windows-built binary was copied | Build on the server (step 5) |
-| `could not read config file` in the logs | `/opt/laseask/config.toml` missing | `ls -l /opt/laseask/config.toml`; copy `backend/config.example.toml` there and fill it in |
-| `Address already in use` | Something else uses port 8787 (e.g. an old Docker container) | `docker ps` / `sudo ss -ltnp \| grep 8787`, stop it |
-| `mistral error 400 ... maximum context length` in the chat | Conversation too long for the model | Start a new conversation, or ask for fewer/narrower tool calls |
+| `exec format error` / `status=203/EXEC` | A program compiled on Windows was copied | Compile on the server (step 4) |
+| `could not read config file` in the logs | `/opt/laseask/config.toml` missing | Section 4, step 7 |
+| `Address already in use` | Something else uses port 8787 (e.g. an old Docker container) | `sudo ss -ltnp \| grep 8787`, stop it |
+| `mistral error 400 ... maximum context length` in the chat | Conversation too long for the model | Start a new chat, or ask for fewer/narrower tool calls |
 
 ### Cheat sheet (once you're used to it)
 
@@ -665,3 +607,37 @@ sudo chown -R laseask:laseask /opt/laseask
 sudo systemctl start laseask
 sudo journalctl -u laseask -f
 ```
+
+---
+
+## 6. HTTPS with a real hostname (optional)
+
+Want `https://laseask.yourdomain.com` instead of `http://<server-ip>:8787`? `deploy/tls/` requests a
+Let's Encrypt certificate with a DNS-01 challenge (no inbound port 80/443 needed), using your DNS
+provider's API (OVH, Cloudflare, Route53, DigitalOcean). Full walkthrough: `deploy/tls/README.md`.
+
+```bash
+chmod +x deploy/tls/*.sh
+deploy/tls/install-certbot.sh ovh
+# fill in deploy/tls/credentials.ovh.example.ini -> /etc/letsencrypt/ovh.ini
+deploy/tls/request-cert.sh --provider ovh --email you@example.com \
+  --credentials /etc/letsencrypt/ovh.ini laseask.example.com
+```
+
+Then set `[tls] enabled = true` in the config file (the script prints the exact `cert_path` and
+`key_path`) and restart once. Renewals are automatic after that. The tooling assumes the
+bare-metal layout (`/opt/laseask`); with Docker, see the note in `deploy/tls/README.md`.
+
+---
+
+## 7. Day-to-day use
+
+- **Pick the AI**: click Claude, GPT or Mistral in the sidebar. The model box lets you type another
+  model name; the app remembers it per AI.
+- **Pick the tools**: tick or untick the MCP servers under **Tools (MCP)**. Untick them all for a
+  plain chat.
+- **New chat**: the **+ New chat** button. Conversations are stored in your browser only (not on
+  the server), per browser and per machine.
+- **Stop a reply**: the send button turns into a stop button while the AI answers.
+- **Add an AI, rotate a key, add an MCP server**: edit the config file, then restart
+  (see the table in "Which guide do I follow?").
