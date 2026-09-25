@@ -38,6 +38,10 @@ bare metal.
 
 Both guides use section 1 for the config file content.
 
+**The code lives on the `ASK` branch**, not on `main` (which only has GitHub's initial commit).
+That's why the guides clone with `git clone -b ASK ...`, and why GitHub Desktop must show
+**Current branch: ASK** before you commit.
+
 ---
 
 ## 1. The config file (both installs)
@@ -143,7 +147,7 @@ uses BuildKit features that the old Docker build engine doesn't have.
 
 ```bash
 cd ~
-git clone https://github.com/Damienvda/LASEA-ASK.git LASEASK
+git clone -b ASK https://github.com/Damienvda/LASEA-ASK.git LASEASK
 cd ~/LASEASK
 ```
 
@@ -233,9 +237,10 @@ this guide: edit `~/LASEASK/backend/config.toml` on the server, then run `docker
 
 ### Step 1: Send your changes to GitHub (on your PC)
 
-1. Open **GitHub Desktop** and select the repository.
+1. Open **GitHub Desktop** and select the repository. At the top, the **Current branch** button
+   must say **ASK**. If it says `main`, click it and pick **ASK**.
 2. On the left, check the list of changed files. **`backend/config.toml` must never appear here.**
-3. Bottom left: type a short summary, click **Commit**.
+3. Bottom left: type a short summary, click **Commit to ASK**.
 4. Top: click **Push origin**. Wait until the button goes back to **Fetch origin**.
 
 If someone else pushed the change, skip this step.
@@ -262,7 +267,8 @@ git status
 git pull
 ```
 
-- `git status` should say `nothing to commit, working tree clean`.
+- `git status` must start with `On branch ASK` and say `nothing to commit, working tree clean`.
+  If it says `On branch main`, run `git switch ASK` first.
 - `git pull` lists the changed files, or `Already up to date.` (did you forget **Push** in step 1?).
 - **Error `Your local changes ... would be overwritten by merge`**: someone edited a file directly
   on the server. Run `git stash`, then `git pull` again. Your `config.toml` is not affected.
@@ -326,6 +332,7 @@ Only the last `:previous` differs from step 6.
 
 | Message | Cause | Fix |
 |---|---|---|
+| `failed to read dockerfile` / `backend/Dockerfile: no such file` | The clone is on `main`, which has no code | `cd ~/LASEASK && git switch ASK`, then build again |
 | `The container name "/laseask" is already in use` | The old container still exists | `docker stop laseask && docker rm laseask`, then `docker run` again |
 | `"/frontend": not found` during the build | Build run from the wrong folder (e.g. `backend/`) | `cd ~/LASEASK`, then build again |
 | `docker build requires 1 argument` | The final `.` is missing | Add ` .` at the end of the build command |
@@ -389,7 +396,7 @@ cargo --version
 
 ```bash
 cd ~
-git clone https://github.com/Damienvda/LASEA-ASK.git LASEASK
+git clone -b ASK https://github.com/Damienvda/LASEA-ASK.git LASEASK
 ```
 
 ### Step 4: Compile
@@ -498,9 +505,10 @@ this guide: `sudo nano /opt/laseask/config.toml`, then `sudo systemctl restart l
 
 ### Step 1: Send your changes to GitHub (on your PC)
 
-1. Open **GitHub Desktop** and select the repository.
+1. Open **GitHub Desktop** and select the repository. At the top, the **Current branch** button
+   must say **ASK**. If it says `main`, click it and pick **ASK**.
 2. On the left, check the list of changed files. **`backend/config.toml` must never appear here.**
-3. Bottom left: type a short summary, click **Commit**.
+3. Bottom left: type a short summary, click **Commit to ASK**.
 4. Top: click **Push origin**. Wait until the button goes back to **Fetch origin**.
 
 If someone else pushed the change, skip this step.
@@ -519,7 +527,8 @@ git status
 git pull
 ```
 
-- `git status` should say `nothing to commit, working tree clean`.
+- `git status` must start with `On branch ASK` and say `nothing to commit, working tree clean`.
+  If it says `On branch main`, run `git switch ASK` first.
 - `git pull` lists the changed files, or `Already up to date.` (did you forget **Push** in step 1?).
 - **Error `Your local changes ... would be overwritten by merge`**: run `git stash`, then
   `git pull` again. This throws away edits made directly in the server's clone.
@@ -585,6 +594,7 @@ sudo systemctl start laseask
 
 | Message | Cause | Fix |
 |---|---|---|
+| `cd: backend: No such file or directory` / `could not find Cargo.toml` | The clone is on `main`, which has no code | `cd ~/LASEASK && git switch ASK`, then compile again |
 | `cargo: command not found` | Rust not installed, or the shell doesn't know it yet | Section 4 step 2, or `source "$HOME/.cargo/env"` |
 | `linker 'cc' not found` | C build tools missing | `sudo apt-get install -y build-essential` |
 | `Text file busy` on `cp` | The service is still running | `sudo systemctl stop laseask`, then copy again |
