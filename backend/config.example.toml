@@ -17,6 +17,16 @@ enabled = false
 cert_path = "/etc/letsencrypt/live/your-hostname/fullchain.pem"
 key_path = "/etc/letsencrypt/live/your-hostname/privkey.pem"
 
+# Optional: how hard the AI works on one question when tools are ticked. These are the defaults.
+[agent]
+# Model requests per question, tool calls included. More = deeper investigations, higher cost.
+max_turns = 40
+# When the AI gives its answer, ask it once whether anything is still open that the tools could
+# resolve. If so it continues, and the UI shows "Completion check: following up on open points".
+completion_check = true
+# Output token limit per request (Claude only; OpenAI and Mistral use the model's own limit).
+max_output_tokens = 16000
+
 [providers.anthropic]
 api_key = "sk-ant-REPLACE-ME"
 default_model = "claude-sonnet-4-5"

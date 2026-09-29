@@ -101,6 +101,15 @@ bearer_token = "your-bearer-token"
   a long tool list eats the AI's context. In a `[mcp.X]` block, `include_tools = [...]` offers
   only the listed tools and `exclude_tools = [...]` hides some (see `config.example.toml`, which
   hides the FortiAnalyzer tools that change things). The start-up log shows how many are offered.
+- **Investigations.** With tools ticked, the AI is told to size results first, use aggregation
+  for totals, page through logs, follow up every lead and end with a "Coverage" section. When a
+  result is only one page of many, the backend adds a notice telling the AI so. Before its answer
+  is final, the AI is asked once whether anything is still open; if so it keeps going, shown as
+  "Completion check: following up on open points". Limits are in the optional `[agent]` section
+  (see `config.example.toml`).
+- **Why was an answer poor?** The logs show every tool call with its arguments, each result's
+  size, and each AI request's token counts:
+  `docker logs laseask --since 15m | grep -E "tool|turn"` (bare metal: `journalctl -u laseask`).
 - When the AI uses a tool, a "🔧 fortianalyzer__X" chip appears above its reply.
 - The **MCP only** switch forces the AI to call a tool before answering, instead of answering from
   its own knowledge. It's only available with Claude, GPT or Mistral and at least one ticked server.

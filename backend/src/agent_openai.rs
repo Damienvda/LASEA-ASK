@@ -6,7 +6,8 @@
 //! MCP itself is model-agnostic; only the way tools are described to the model and the way the
 //! model asks to call them differs per provider, which is all this file handles.
 
-use crate::agent::{call_mcp_tool, ToolSpec};
+use crate::agent::{call_mcp_tool, should_check, Reply, ToolSpec, COMPLETION_CHECK};
+use crate::config::AgentConfig;
 use crate::mcp::McpClient;
 use crate::providers::openai::{MISTRAL_API_URL, OPENAI_API_URL};
 use crate::providers::sse::sse_events;
@@ -16,8 +17,6 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
-
-const MAX_TURNS: usize = 20;
 
 /// Where to send requests for one OpenAI-compatible provider, and its provider-specific quirks.
 pub struct Endpoint {
@@ -51,6 +50,7 @@ struct ToolCallAcc {
     arguments: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     endpoint: Endpoint,
     api_key: &str,
@@ -59,6 +59,7 @@ pub async fn run(
     tools: &[ToolSpec],
     mcp_clients: &HashMap<String, Arc<McpClient>>,
     force_first_tool_use: bool,
+    cfg: &AgentConfig,
     tx: Sender<StreamEvent>,
 ) {
     if let Err(e) = run_inner(
@@ -69,6 +70,7 @@ pub async fn run(
         tools,
         mcp_clients,
         force_first_tool_use,
+        cfg,
         &tx,
     )
     .await
@@ -77,6 +79,7 @@ pub async fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_inner(
     endpoint: &Endpoint,
     api_key: &str,
@@ -85,6 +88,7 @@ async fn run_inner(
     tools: &[ToolSpec],
     mcp_clients: &HashMap<String, Arc<McpClient>>,
     force_first_tool_use: bool,
+    cfg: &AgentConfig,
     tx: &Sender<StreamEvent>,
 ) -> anyhow::Result<()> {
     let label = endpoint.label;
@@ -110,8 +114,11 @@ async fn run_inner(
         .collect();
 
     let client = reqwest::Client::new();
+    let mut reply = Reply::new(tx);
+    let mut tools_used = 0;
+    let mut checked = false;
 
-    for turn in 0..MAX_TURNS {
+    for turn in 0..cfg.max_turns {
         // The browser went away (Stop button, tab closed): don't keep paying for API calls and
         // tool runs nobody will see.
         if tx.is_closed() {
@@ -130,7 +137,7 @@ async fn run_inner(
         }
         // Last turn: forbid tools so the model has to answer with what it has gathered (see
         // agent.rs). Both OpenAI and Mistral spell this "none".
-        if turn == MAX_TURNS - 1 {
+        if turn + 1 == cfg.max_turns {
             body["tool_choice"] = json!("none");
         }
 
@@ -154,6 +161,10 @@ async fn run_inner(
         // Keyed by the tool call's `index`; OpenAI streams a call's arguments across many chunks,
         // Mistral usually sends each call whole in one chunk. Accumulating handles both.
         let mut calls: BTreeMap<u64, ToolCallAcc> = BTreeMap::new();
+        let mut input_tokens = 0;
+        let mut output_tokens = 0;
+        let mut finish_reason = String::new();
+        reply.start_turn();
 
         while let Some(data) = events.next().await {
             let v: Value = match serde_json::from_str(&data) {
@@ -165,6 +176,15 @@ async fn run_inner(
                 anyhow::bail!("{label} error: {message}");
             }
 
+            // Mistral sends usage in the last chunk; OpenAI only if asked, so it may stay 0.
+            if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
+                input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
+                output_tokens = usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
+            }
+            if let Some(reason) = v.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
+                finish_reason = reason.to_string();
+            }
+
             let Some(delta) = v.pointer("/choices/0/delta") else {
                 continue;
             };
@@ -172,7 +192,7 @@ async fn run_inner(
             let chunk = content_text(delta.get("content"));
             if !chunk.is_empty() {
                 text.push_str(&chunk);
-                let _ = tx.send(StreamEvent::Delta { text: chunk }).await;
+                reply.text(&chunk).await;
             }
 
             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -202,10 +222,36 @@ async fn run_inner(
             }
         }
 
+        tracing::info!(
+            "{label} turn {}: {input_tokens} input tokens, {output_tokens} output tokens, finish: {finish_reason}",
+            turn + 1
+        );
+
         if calls.is_empty() {
+            if reply.checking() {
+                reply.end_check().await;
+            } else {
+                if finish_reason == "length" {
+                    reply
+                        .text("\n\n*[Answer cut off: the model's output limit was reached.]*")
+                        .await;
+                }
+                if should_check(cfg, checked, tools_used, turn) {
+                    checked = true;
+                    reply.start_check();
+                    messages.push(json!({ "role": "assistant", "content": text }));
+                    messages.push(json!({ "role": "user", "content": COMPLETION_CHECK }));
+                    continue;
+                }
+            }
             let _ = tx.send(StreamEvent::Done).await;
             return Ok(());
         }
+
+        if reply.checking() {
+            reply.end_check().await;
+        }
+        tools_used += calls.len();
 
         let tool_calls_json: Vec<Value> = calls
             .values()
@@ -241,7 +287,7 @@ async fn run_inner(
         }
     }
 
-    anyhow::bail!("tool-use loop exceeded {MAX_TURNS} turns without a final answer")
+    anyhow::bail!("tool-use loop exceeded {} turns without a final answer", cfg.max_turns)
 }
 
 /// Error payloads mid-stream: OpenAI sends `{"error": {"message": ...}}`, Mistral may send

@@ -7,6 +7,7 @@ mod prompt;
 mod providers;
 mod routes;
 mod state;
+mod tool_result;
 
 use agent::ToolSpec;
 use axum::routing::{get, post};

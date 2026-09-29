@@ -79,6 +79,29 @@ fn default_reload_seconds() -> u64 {
     6 * 60 * 60
 }
 
+/// How hard the tool-use loops (agent.rs, agent_openai.rs) work on one question.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// Model requests per question, tool calls included. The last one is forced to answer.
+    pub max_turns: usize,
+    /// When the model gives its final answer after using tools, ask it once whether anything is
+    /// still open that the tools could resolve, and let it continue if so.
+    pub completion_check: bool,
+    /// Output token limit per model request. Only sent to Anthropic, where it's mandatory.
+    pub max_output_tokens: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: 40,
+            completion_check: true,
+            max_output_tokens: 16_000,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub default_provider: String,
@@ -95,6 +118,8 @@ pub struct Config {
     /// Optional extra instructions appended to the built-in system prompt (see prompt.rs).
     #[serde(default)]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 fn default_server() -> ServerConfig {
@@ -121,7 +146,10 @@ impl Config {
                 cfg.default_provider
             );
         }
-        if cfg.tls.enabled && (cfg.tls.cert_path.is_empty() || cfg.tls.key_path.is_empty()) {
+        if cfg.agent.max_turns < 2 {
+            anyhow::bail!("[agent] max_turns must be at least 2");
+        }
+        if cfg.tls.enabled &&(cfg.tls.cert_path.is_empty() || cfg.tls.key_path.is_empty()) {
             anyhow::bail!("[tls] enabled = true requires both cert_path and key_path to be set");
         }
         Ok(cfg)

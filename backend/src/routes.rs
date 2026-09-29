@@ -164,18 +164,23 @@ pub async fn chat(
         if has_tools && (provider_name == "anthropic" || openai_endpoint.is_some()) {
             let (tx, rx) = mpsc::channel::<StreamEvent>(32);
             let api_key = provider_cfg.api_key.clone();
+            let agent_cfg = state.config.agent.clone();
 
             tokio::spawn(async move {
                 match openai_endpoint {
                     Some(endpoint) => {
                         agent_openai::run(
-                            endpoint, &api_key, &model, &messages, &tools, &mcp_clients, mcp_only, tx,
+                            endpoint, &api_key, &model, &messages, &tools, &mcp_clients, mcp_only,
+                            &agent_cfg, tx,
                         )
                         .await
                     }
                     None => {
-                        agent::run(&api_key, &model, &messages, &tools, &mcp_clients, mcp_only, tx)
-                            .await
+                        agent::run(
+                            &api_key, &model, &messages, &tools, &mcp_clients, mcp_only, &agent_cfg,
+                            tx,
+                        )
+                        .await
                     }
                 }
             });

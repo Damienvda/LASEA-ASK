@@ -1,16 +1,18 @@
 //! The Anthropic tool-use loop: streams a chat turn, and whenever Claude asks to invoke a tool,
 //! calls it against the right MCP server, feeds the result back, and continues — repeating until
-//! Claude answers without requesting a tool, or `MAX_TURNS` is hit as a safety valve.
+//! Claude answers without requesting a tool, or `max_turns` is hit as a safety valve.
 //!
 //! The wire format here is Anthropic-specific (content-block streaming, `tool_use`/`tool_result`
 //! blocks). OpenAI-compatible providers (OpenAI, Mistral) use a different tool-calling format and
-//! have their own loop in agent_openai.rs; both share `call_mcp_tool` below. routes.rs picks the
-//! right loop whenever at least one MCP tool is configured, and otherwise uses the plain
-//! Provider::stream_chat path.
+//! have their own loop in agent_openai.rs; both share `call_mcp_tool`, `Reply` and the completion
+//! check below. routes.rs picks the right loop whenever at least one MCP tool is configured, and
+//! otherwise uses the plain Provider::stream_chat path.
 
+use crate::config::AgentConfig;
 use crate::mcp::McpClient;
 use crate::providers::sse::sse_events;
 use crate::providers::{ChatMessage, StreamEvent};
+use crate::tool_result;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -28,9 +30,101 @@ pub struct ToolSpec {
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
-const MAX_TURNS: usize = 20;
-/// Roughly 10k tokens. See `truncate_tool_result`.
-const MAX_TOOL_RESULT_CHARS: usize = 40_000;
+
+/// Sent as a user turn when the model gives its final answer after using tools (see
+/// `should_check`). Models tend to stop at the first plausible answer; this makes it look for
+/// what it skipped before the answer counts as final.
+pub const COMPLETION_CHECK: &str = "\
+[Automatic completion check from LASEASK, not written by the user.] Before your answer is final, \
+review it against the question:
+- Is any part of the question unanswered?
+- Did you treat a sample as complete (a single page, a PAGING NOTICE, a TRUNCATED result)?
+- Did you find leads (IPs, users, hosts, alerts, incidents) you did not follow up?
+- Is any statement unverified that a tool call could confirm?
+If everything is covered, reply with exactly DONE and nothing else. Otherwise, call the tools you \
+need now, then write the complete, corrected final answer (all of it, not only the additions).";
+
+/// Shown to the user when the completion check sends the model back to work.
+const CHECK_SEPARATOR: &str = "\n\n---\n\n*Completion check: following up on open points.*\n\n";
+
+/// Whether to run the completion check now that the model has answered without asking for tools.
+/// Once per question, only after tools were used, and only with turns left to act on it.
+pub fn should_check(cfg: &AgentConfig, checked: bool, tools_used: usize, turn: usize) -> bool {
+    cfg.completion_check && !checked && tools_used > 0 && turn + 2 < cfg.max_turns
+}
+
+/// The completion check's "nothing left to do" reply.
+fn is_done(text: &str) -> bool {
+    let t = text.trim().trim_matches(|c: char| !c.is_alphanumeric());
+    t.is_empty() || t.eq_ignore_ascii_case("done")
+}
+
+/// Streams the model's text to the browser. Keeps separate turns apart (the text before and after
+/// a tool call would otherwise run together), and holds back the completion-check turn until it's
+/// clear whether it's more than "DONE".
+pub struct Reply<'a> {
+    tx: &'a Sender<StreamEvent>,
+    emitted: bool,
+    turn_started: bool,
+    checking: bool,
+    held: String,
+}
+
+impl<'a> Reply<'a> {
+    pub fn new(tx: &'a Sender<StreamEvent>) -> Self {
+        Self { tx, emitted: false, turn_started: false, checking: false, held: String::new() }
+    }
+
+    pub fn start_turn(&mut self) {
+        self.turn_started = false;
+    }
+
+    pub async fn text(&mut self, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        if self.checking {
+            self.held.push_str(chunk);
+            return;
+        }
+        if self.emitted && !self.turn_started {
+            self.send("\n\n").await;
+        }
+        self.turn_started = true;
+        self.emitted = true;
+        self.send(chunk).await;
+    }
+
+    pub fn checking(&self) -> bool {
+        self.checking
+    }
+
+    pub fn start_check(&mut self) {
+        self.checking = true;
+        self.held.clear();
+    }
+
+    /// Ends the completion-check turn: if it's more than "DONE", shows the separator and what the
+    /// model said. Returns true when the model is done.
+    pub async fn end_check(&mut self) -> bool {
+        self.checking = false;
+        let held = std::mem::take(&mut self.held);
+        if is_done(&held) {
+            return true;
+        }
+        self.send(CHECK_SEPARATOR).await;
+        self.emitted = true;
+        self.turn_started = true;
+        self.send(&held).await;
+        false
+    }
+
+    async fn send(&self, text: &str) {
+        if !text.is_empty() {
+            let _ = self.tx.send(StreamEvent::Delta { text: text.to_string() }).await;
+        }
+    }
+}
 
 enum BlockAcc {
     Text(String),
@@ -41,6 +135,7 @@ enum BlockAcc {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     api_key: &str,
     model: &str,
@@ -48,6 +143,7 @@ pub async fn run(
     tools: &[ToolSpec],
     mcp_clients: &HashMap<String, Arc<McpClient>>,
     force_first_tool_use: bool,
+    cfg: &AgentConfig,
     tx: Sender<StreamEvent>,
 ) {
     if let Err(e) = run_inner(
@@ -57,6 +153,7 @@ pub async fn run(
         tools,
         mcp_clients,
         force_first_tool_use,
+        cfg,
         &tx,
     )
     .await
@@ -65,6 +162,7 @@ pub async fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_inner(
     api_key: &str,
     model: &str,
@@ -72,6 +170,7 @@ async fn run_inner(
     tools: &[ToolSpec],
     mcp_clients: &HashMap<String, Arc<McpClient>>,
     force_first_tool_use: bool,
+    cfg: &AgentConfig,
     tx: &Sender<StreamEvent>,
 ) -> anyhow::Result<()> {
     let system: String = initial_messages
@@ -99,8 +198,11 @@ async fn run_inner(
         .collect();
 
     let client = reqwest::Client::new();
+    let mut reply = Reply::new(tx);
+    let mut tools_used = 0;
+    let mut checked = false;
 
-    for turn in 0..MAX_TURNS {
+    for turn in 0..cfg.max_turns {
         // The browser went away (Stop button, tab closed): don't keep paying for API calls and
         // tool runs nobody will see.
         if tx.is_closed() {
@@ -108,7 +210,7 @@ async fn run_inner(
         }
         let mut body = json!({
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": cfg.max_output_tokens,
             "stream": true,
             "messages": messages,
             "tools": tools_json,
@@ -126,7 +228,7 @@ async fn run_inner(
         }
         // Last turn: forbid tools so the model has to answer with what it has gathered, instead
         // of the loop ending on an error after all that work.
-        if turn == MAX_TURNS - 1 {
+        if turn + 1 == cfg.max_turns {
             body["tool_choice"] = json!({ "type": "none" });
         }
 
@@ -150,6 +252,10 @@ async fn run_inner(
         // Per-content-block accumulators, indexed by the block's `index` in this turn.
         let mut blocks: HashMap<u64, BlockAcc> = HashMap::new();
         let mut order: Vec<u64> = Vec::new();
+        let mut input_tokens = 0;
+        let mut output_tokens = 0;
+        let mut stop_reason = String::new();
+        reply.start_turn();
 
         while let Some(data) = events.next().await {
             let v: Value = match serde_json::from_str(&data) {
@@ -157,6 +263,20 @@ async fn run_inner(
                 Err(_) => continue,
             };
             match v.get("type").and_then(|t| t.as_str()) {
+                Some("message_start") => {
+                    input_tokens = v
+                        .pointer("/message/usage/input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                }
+                Some("message_delta") => {
+                    if let Some(n) = v.pointer("/usage/output_tokens").and_then(Value::as_u64) {
+                        output_tokens = n;
+                    }
+                    if let Some(s) = v.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                        stop_reason = s.to_string();
+                    }
+                }
                 Some("content_block_start") => {
                     let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                     let block = v.get("content_block").cloned().unwrap_or(json!({}));
@@ -184,7 +304,7 @@ async fn run_inner(
                             if let Some(BlockAcc::Text(buf)) = blocks.get_mut(&index) {
                                 buf.push_str(text);
                             }
-                            let _ = tx.send(StreamEvent::Delta { text: text.to_string() }).await;
+                            reply.text(text).await;
                         }
                         Some("input_json_delta") => {
                             let partial = delta.get("partial_json").and_then(|t| t.as_str()).unwrap_or("");
@@ -207,6 +327,11 @@ async fn run_inner(
                 _ => {}
             }
         }
+
+        tracing::info!(
+            "anthropic turn {}: {input_tokens} input tokens, {output_tokens} output tokens, stop: {stop_reason}",
+            turn + 1
+        );
 
         // Reconstruct the assistant turn's content blocks, in the order they streamed.
         let mut content_blocks: Vec<Value> = Vec::new();
@@ -233,9 +358,29 @@ async fn run_inner(
         messages.push(json!({ "role": "assistant", "content": content_blocks }));
 
         if tool_uses.is_empty() {
+            if reply.checking() {
+                reply.end_check().await;
+            } else {
+                if stop_reason == "max_tokens" {
+                    reply
+                        .text("\n\n*[Answer cut off: the output limit ([agent] max_output_tokens) was reached.]*")
+                        .await;
+                }
+                if should_check(cfg, checked, tools_used, turn) {
+                    checked = true;
+                    reply.start_check();
+                    messages.push(json!({ "role": "user", "content": COMPLETION_CHECK }));
+                    continue;
+                }
+            }
             let _ = tx.send(StreamEvent::Done).await;
             return Ok(());
         }
+
+        if reply.checking() {
+            reply.end_check().await;
+        }
+        tools_used += tool_uses.len();
 
         let mut tool_results: Vec<Value> = Vec::new();
         for (tool_use_id, qualified_name, input) in tool_uses {
@@ -255,7 +400,7 @@ async fn run_inner(
         messages.push(json!({ "role": "user", "content": tool_results }));
     }
 
-    anyhow::bail!("tool-use loop exceeded {MAX_TURNS} turns without a final answer")
+    anyhow::bail!("tool-use loop exceeded {} turns without a final answer", cfg.max_turns)
 }
 
 /// Routes a "{server}__{tool}" call to the right MCP server and returns the text to feed back to
@@ -268,128 +413,29 @@ pub async fn call_mcp_tool(
 ) -> String {
     let (server, tool) = qualified_name.split_once("__").unwrap_or(("", qualified_name));
 
+    // The arguments are what shows whether the model narrowed its query (time range, filters,
+    // fields) or paged on, so log them; capped, a filter list can be long.
+    let args: String = input.to_string().chars().take(500).collect();
+    tracing::info!("tool call {qualified_name} {args}");
+
     match mcp_clients.get(server) {
-        Some(mcp) => match mcp.call_tool(tool, input).await {
-            Ok(text) => {
-                let raw_len = text.len();
-                let compacted = compact_tool_result(text);
-                tracing::info!(
-                    "tool {qualified_name}: {raw_len} chars, {} after compaction",
-                    compacted.len()
-                );
-                truncate_tool_result(compacted)
-            }
+        Some(mcp) => match mcp.call_tool(tool, input.clone()).await {
+            Ok(text) => tool_result::prepare(tool, &input, text),
             Err(e) => format!("Error calling tool: {e:#}"),
         },
         None => format!("Error: no MCP server registered for '{server}'"),
     }
 }
 
-/// Shrinks a JSON tool result without losing information: drops null/empty fields, turns lists of
-/// records into a column header plus rows (log results repeat every key on every record), and
-/// removes the pretty-printing whitespace. The system prompt (prompt.rs) tells the model about the
-/// `{"columns", "rows"}` shape. Non-JSON results are returned unchanged.
-fn compact_tool_result(text: String) -> String {
-    match serde_json::from_str::<Value>(&text) {
-        Ok(v) => serde_json::to_string(&compact_value(v)).unwrap_or(text),
-        Err(_) => text,
-    }
-}
-
-fn compact_value(v: Value) -> Value {
-    match v {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(k, v)| (k, compact_value(v)))
-                .filter(|(_, v)| !is_empty(v))
-                .collect(),
-        ),
-        Value::Array(items) => {
-            let items: Vec<Value> = items.into_iter().map(compact_value).collect();
-            if items.len() >= 2 && items.iter().all(Value::is_object) {
-                tabulate(items)
-            } else {
-                Value::Array(items)
-            }
-        }
-        other => other,
-    }
-}
-
-fn is_empty(v: &Value) -> bool {
-    match v {
-        Value::Null => true,
-        Value::String(s) => s.trim().is_empty(),
-        Value::Array(a) => a.is_empty(),
-        Value::Object(o) => o.is_empty(),
-        _ => false,
-    }
-}
-
-/// `items` must all be objects. Columns keep first-seen order; a record without a column gets null.
-fn tabulate(items: Vec<Value>) -> Value {
-    let mut columns: Vec<String> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for item in &items {
-        if let Value::Object(map) = item {
-            for key in map.keys() {
-                if seen.insert(key.clone()) {
-                    columns.push(key.clone());
-                }
-            }
-        }
-    }
-    let rows: Vec<Value> = items
-        .into_iter()
-        .map(|item| match item {
-            Value::Object(mut map) => Value::Array(
-                columns.iter().map(|c| map.remove(c).unwrap_or(Value::Null)).collect(),
-            ),
-            other => other,
-        })
-        .collect();
-    json!({ "columns": columns, "rows": rows })
-}
-
-/// Tool results are fed back to the model on every later turn, so one huge result (e.g. every
-/// UEBA endpoint) can push the conversation past the model's context window. Cap each result and
-/// tell the model it was cut, so it can retry with a narrower query instead of trusting a partial.
-fn truncate_tool_result(text: String) -> String {
-    if text.len() <= MAX_TOOL_RESULT_CHARS {
-        return text;
-    }
-    let mut cut = MAX_TOOL_RESULT_CHARS;
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!(
-        "{}\n\n[TRUNCATED: this tool result was {} characters and only the first {} are shown. \
-         Do not treat it as complete. Re-run the tool with a narrower query (fewer fields, a \
-         lower limit, stricter filters or a shorter time range).]",
-        &text[..cut],
-        text.len(),
-        cut
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::compact_tool_result;
+    use super::is_done;
 
     #[test]
-    fn compacts_records_into_a_table() {
-        let raw = r#"{"total": 2, "note": "", "data": [
-            {"srcip": "10.0.0.1", "action": "deny", "user": null},
-            {"srcip": "10.0.0.2", "action": "accept", "port": 443}
-        ]}"#;
-        assert_eq!(
-            compact_tool_result(raw.to_string()),
-            r#"{"data":{"columns":["action","srcip","port"],"rows":[["deny","10.0.0.1",null],["accept","10.0.0.2",443]]},"total":2}"#
-        );
-    }
-
-    #[test]
-    fn leaves_non_json_alone() {
-        assert_eq!(compact_tool_result("not json".into()), "not json");
+    fn done_replies() {
+        assert!(is_done("DONE"));
+        assert!(is_done(" Done. "));
+        assert!(is_done("**DONE**"));
+        assert!(!is_done("Not done: I still need to check 10.0.0.5."));
     }
 }
