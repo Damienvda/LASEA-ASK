@@ -159,6 +159,7 @@ pub async fn chat(
         content: prompt::system_prompt(
             &prompt_servers,
             &state.mcp_notes,
+            mcp_only,
             state.config.system_prompt.as_deref(),
         ),
     }];

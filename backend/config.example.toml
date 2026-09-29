@@ -25,7 +25,8 @@ max_turns = 40
 # resolve. If so it continues, and the UI shows "Completion check: following up on open points".
 completion_check = true
 # Output token limit per request (Claude only; OpenAI and Mistral use the model's own limit).
-max_output_tokens = 16000
+# Claude's thinking counts towards it; you only pay for what is actually generated.
+max_output_tokens = 64000
 # Size cap per tool result, in characters. Log rows cost about 1 token per 1.7 characters, so
 # 20000 is roughly 12k tokens. Bigger results are cut and the AI is told to narrow its query.
 max_tool_result_chars = 20000
@@ -35,7 +36,11 @@ plan_first = true
 
 [providers.anthropic]
 api_key = "sk-ant-REPLACE-ME"
-default_model = "claude-sonnet-4-5"
+default_model = "claude-opus-5-5"
+# How hard Claude works per step: low | medium | high | xhigh | max. Opus 5.5's own default is only
+# "medium"; investigations want "high". Higher = better answers, more tokens. Don't set
+# `temperature` here: current Claude models reject it.
+effort = "high"
 
 [providers.openai]
 api_key = "sk-REPLACE-ME"

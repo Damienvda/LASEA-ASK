@@ -66,11 +66,13 @@ not checked or still open, with the reason.
 - If the question cannot be answered from the data, say so plainly.";
 
 /// `servers` are the MCP servers whose tools this request offers (empty = plain chat), `notes`
-/// each server's guide (its own instructions plus config.toml `notes`, see main.rs), and `extra`
-/// the optional `system_prompt` from config.toml, appended as-is.
+/// each server's guide (its own instructions plus config.toml `notes`, see main.rs), `mcp_only`
+/// the UI's "MCP only" switch, and `extra` the optional `system_prompt` from config.toml,
+/// appended as-is.
 pub fn system_prompt(
     servers: &[String],
     notes: &HashMap<String, String>,
+    mcp_only: bool,
     extra: Option<&str>,
 ) -> String {
     let mut prompt = format!(
@@ -84,6 +86,13 @@ pub fn system_prompt(
             "\n\nConnected MCP servers: {}.\n{TOOL_RULES}",
             servers.join(", ")
         ));
+        // Also the only enforcement on models that reject a forced tool call (agent.rs).
+        if mcp_only {
+            prompt.push_str(
+                "\n\nMCP-only mode is on: call at least one tool before answering, and base the \
+                 answer on tool results, never on your own knowledge alone.",
+            );
+        }
         for server in servers {
             if let Some(guide) = notes.get(server) {
                 prompt.push_str(&format!(

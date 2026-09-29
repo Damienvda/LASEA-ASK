@@ -160,6 +160,14 @@ enum BlockAcc {
         name: String,
         input_json: String,
     },
+    /// Models with thinking on (always, on Opus 5.5 / Fable 5.1) stream these before their text
+    /// and tool calls. They must go back unchanged, signature included, with the tool results.
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    /// Any other block (e.g. `redacted_thinking`), arriving whole: sent back as-is.
+    Other(Value),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -233,6 +241,8 @@ async fn run_inner(
         request_plan(&mut messages);
     }
     let first_tool_turn = usize::from(planning);
+    let mut forced_tool_use_supported = true;
+    let mut effort_supported = true;
 
     for turn in 0..cfg.max_turns {
         // The browser went away (Stop button, tab closed): don't keep paying for API calls and
@@ -253,15 +263,24 @@ async fn run_inner(
         if let Some(t) = provider.temperature {
             body["temperature"] = json!(t);
         }
+        if let Some(effort) = provider.effort.as_deref().filter(|_| effort_supported) {
+            body["output_config"] = json!({ "effort": effort });
+        }
+        // Every turn resends the whole conversation (tools, system prompt, all tool results so
+        // far). Automatic caching bills the part already sent at the cache-read price (a tenth
+        // of the input price) instead of the full price again.
+        body["cache_control"] = json!({ "type": "ephemeral" });
         if planning && turn == 0 {
             body["tool_choice"] = json!({ "type": "none" });
         }
-        // "MCP only" mode: force the very first turn to invoke a tool rather than let Claude
+        // "MCP only" mode: force the first tool turn to invoke a tool rather than let Claude
         // answer from its own knowledge. This is an actual API-level constraint (Anthropic's
-        // tool_choice), not a prompt nudge, so it's reliable. Only the first turn — forcing it on
+        // tool_choice), not a prompt nudge, so it's reliable. Only that turn — forcing it on
         // every turn would mean the model could never stop calling tools to produce a final
-        // text-only answer.
-        if force_first_tool_use && turn == first_tool_turn {
+        // text-only answer. The newest models (Opus 5.5, Fable 5.1) reject forced tool use; then
+        // the request is retried without it and the system prompt's MCP-only rule (prompt.rs)
+        // does the job.
+        if force_first_tool_use && forced_tool_use_supported && turn == first_tool_turn {
             body["tool_choice"] = json!({ "type": "any" });
         }
         // Last turn: forbid tools so the model has to answer with what it has gathered, instead
@@ -270,20 +289,54 @@ async fn run_inner(
             body["tool_choice"] = json!({ "type": "none" });
         }
 
-        let resp = client
-            .post(API_URL)
-            .header("x-api-key", &provider.api_key)
-            .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
+        let resp = loop {
+            let resp = client
+                .post(API_URL)
+                .header("x-api-key", &provider.api_key)
+                .header("anthropic-version", API_VERSION)
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await?;
+            if resp.status().is_success() {
+                break resp;
+            }
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
+            let forced = body.pointer("/tool_choice/type").and_then(Value::as_str) == Some("any");
+            if status == reqwest::StatusCode::BAD_REQUEST && forced && text.contains("tool_choice") {
+                tracing::warn!("{model} rejects forced tool use; continuing with tool_choice auto");
+                forced_tool_use_supported = false;
+                if let Some(obj) = body.as_object_mut() {
+                    obj.remove("tool_choice");
+                }
+                continue;
+            }
+            // Older models (Sonnet 4.5, Haiku 4.5) reject `effort`.
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && body.get("output_config").is_some()
+                && text.contains("effort")
+            {
+                tracing::warn!("{model} rejects effort; continuing without it");
+                effort_supported = false;
+                if let Some(obj) = body.as_object_mut() {
+                    obj.remove("output_config");
+                }
+                continue;
+            }
+            // Same for sampling parameters, which Opus 4.7+ / Sonnet 5 and newer reject.
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && body.get("temperature").is_some()
+                && text.contains("temperature")
+            {
+                tracing::warn!("{model} rejects temperature; continuing without it");
+                if let Some(obj) = body.as_object_mut() {
+                    obj.remove("temperature");
+                }
+                continue;
+            }
             anyhow::bail!("anthropic error {status}: {text}");
-        }
+        };
 
         let mut events = sse_events(resp.bytes_stream());
 
@@ -291,6 +344,8 @@ async fn run_inner(
         let mut blocks: HashMap<u64, BlockAcc> = HashMap::new();
         let mut order: Vec<u64> = Vec::new();
         let mut input_tokens = 0;
+        let mut cache_read = 0;
+        let mut cache_write = 0;
         let mut output_tokens = 0;
         let mut stop_reason = String::new();
         reply.start_turn();
@@ -302,10 +357,12 @@ async fn run_inner(
             };
             match v.get("type").and_then(|t| t.as_str()) {
                 Some("message_start") => {
-                    input_tokens = v
-                        .pointer("/message/usage/input_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
+                    let usage = |k: &str| {
+                        v.pointer(&format!("/message/usage/{k}")).and_then(Value::as_u64).unwrap_or(0)
+                    };
+                    input_tokens = usage("input_tokens");
+                    cache_read = usage("cache_read_input_tokens");
+                    cache_write = usage("cache_creation_input_tokens");
                 }
                 Some("message_delta") => {
                     if let Some(n) = v.pointer("/usage/output_tokens").and_then(Value::as_u64) {
@@ -320,18 +377,21 @@ async fn run_inner(
                     let block = v.get("content_block").cloned().unwrap_or(json!({}));
                     let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("text");
                     order.push(index);
-                    if block_type == "tool_use" {
-                        blocks.insert(
-                            index,
-                            BlockAcc::ToolUse {
-                                id: block.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string(),
-                                name: block.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-                                input_json: String::new(),
-                            },
-                        );
-                    } else {
-                        blocks.insert(index, BlockAcc::Text(String::new()));
-                    }
+                    let str_field = |k: &str| block.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let acc = match block_type {
+                        "tool_use" => BlockAcc::ToolUse {
+                            id: str_field("id"),
+                            name: str_field("name"),
+                            input_json: String::new(),
+                        },
+                        "text" => BlockAcc::Text(str_field("text")),
+                        "thinking" => BlockAcc::Thinking {
+                            thinking: str_field("thinking"),
+                            signature: str_field("signature"),
+                        },
+                        _ => BlockAcc::Other(block.clone()),
+                    };
+                    blocks.insert(index, acc);
                 }
                 Some("content_block_delta") => {
                     let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
@@ -348,6 +408,18 @@ async fn run_inner(
                             let partial = delta.get("partial_json").and_then(|t| t.as_str()).unwrap_or("");
                             if let Some(BlockAcc::ToolUse { input_json, .. }) = blocks.get_mut(&index) {
                                 input_json.push_str(partial);
+                            }
+                        }
+                        Some("thinking_delta") => {
+                            let part = delta.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+                            if let Some(BlockAcc::Thinking { thinking, .. }) = blocks.get_mut(&index) {
+                                thinking.push_str(part);
+                            }
+                        }
+                        Some("signature_delta") => {
+                            let part = delta.get("signature").and_then(|t| t.as_str()).unwrap_or("");
+                            if let Some(BlockAcc::Thinking { signature, .. }) = blocks.get_mut(&index) {
+                                signature.push_str(part);
                             }
                         }
                         _ => {}
@@ -367,7 +439,7 @@ async fn run_inner(
         }
 
         tracing::info!(
-            "anthropic turn {}: {input_tokens} input tokens, {output_tokens} output tokens, stop: {stop_reason}",
+            "anthropic turn {}: {input_tokens} input tokens (+{cache_read} from cache, {cache_write} written to cache), {output_tokens} output tokens, stop: {stop_reason}",
             turn + 1
         );
 
@@ -392,12 +464,23 @@ async fn run_inner(
                     }));
                     tool_uses.push((id.clone(), name.clone(), input));
                 }
+                Some(BlockAcc::Thinking { thinking, signature }) => {
+                    content_blocks.push(json!({
+                        "type": "thinking",
+                        "thinking": thinking,
+                        "signature": signature,
+                    }));
+                }
+                Some(BlockAcc::Other(block)) => content_blocks.push(block.clone()),
                 None => {}
             }
         }
 
-        // An assistant turn with no content at all is rejected too.
-        if content_blocks.is_empty() {
+        // An assistant turn without any text or tool call (empty, or thinking only) is rejected.
+        let has_output = content_blocks.iter().any(|b| {
+            matches!(b.get("type").and_then(Value::as_str), Some("text" | "tool_use"))
+        });
+        if !has_output {
             content_blocks.push(json!({ "type": "text", "text": "(no output)" }));
         }
         messages.push(json!({ "role": "assistant", "content": content_blocks }));

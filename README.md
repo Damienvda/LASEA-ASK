@@ -58,7 +58,8 @@ port = 8787
 
 [providers.anthropic]
 api_key = "sk-ant-your-real-key"
-default_model = "claude-sonnet-4-5"
+default_model = "claude-opus-5-5"
+effort = "high"
 
 [providers.openai]
 api_key = "sk-your-real-key"

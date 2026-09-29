@@ -11,6 +11,11 @@ pub struct ProviderConfig {
     /// reject it.
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// Anthropic only: how much the model thinks and works per step, "low" | "medium" | "high" |
+    /// "xhigh" | "max". Unset = the model's default (only `medium` on Opus 5.5). Investigations
+    /// want "high" or more.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -97,7 +102,8 @@ pub struct AgentConfig {
     /// When the model gives its final answer after using tools, ask it once whether anything is
     /// still open that the tools could resolve, and let it continue if so.
     pub completion_check: bool,
-    /// Output token limit per model request. Only sent to Anthropic, where it's mandatory.
+    /// Output token limit per model request. Only sent to Anthropic, where it's mandatory. On
+    /// models that think, the thinking counts towards it; you only pay for what's generated.
     pub max_output_tokens: u32,
     /// Size cap per tool result, in characters (after compaction). Log rows are mostly IPs and
     /// numbers, which cost about 1 token per 1.7 characters, so 20k is roughly 12k tokens.
@@ -113,7 +119,7 @@ impl Default for AgentConfig {
         Self {
             max_turns: 40,
             completion_check: true,
-            max_output_tokens: 16_000,
+            max_output_tokens: 64_000,
             max_tool_result_chars: 20_000,
             plan_first: true,
         }
