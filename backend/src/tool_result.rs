@@ -6,9 +6,6 @@
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-/// Roughly 10k tokens. See `truncate`.
-const MAX_TOOL_RESULT_CHARS: usize = 40_000;
-
 /// Tools whose integer `tid` is a reusable paging handle for `fetch_more_logs` (the FortiAnalyzer
 /// MCP's `search_ips_logs` also returns a `tid`, but a dead one).
 const PAGEABLE_TOOLS: &[&str] = &["query_logs", "fetch_more_logs"];
@@ -16,8 +13,9 @@ const PAGEABLE_TOOLS: &[&str] = &["query_logs", "fetch_more_logs"];
 /// Fields a result may use to hold its list of records, when it doesn't give a `count`.
 const RECORD_FIELDS: &[&str] = &["logs", "data", "results", "items", "alerts", "incidents"];
 
-/// `tool` is the MCP tool name (without the "{server}__" prefix) and `input` its arguments.
-pub fn prepare(tool: &str, input: &Value, text: String) -> String {
+/// `tool` is the MCP tool name (without the "{server}__" prefix), `input` its arguments, and
+/// `max_chars` the size cap (`[agent] max_tool_result_chars`).
+pub fn prepare(tool: &str, input: &Value, text: String, max_chars: usize) -> String {
     let raw_len = text.len();
     let (body, notice) = match serde_json::from_str::<Value>(&text) {
         Ok(v) => {
@@ -31,7 +29,7 @@ pub fn prepare(tool: &str, input: &Value, text: String) -> String {
         body.len(),
         if notice.is_some() { ", partial (paging notice added)" } else { "" }
     );
-    let mut out = truncate(body);
+    let mut out = truncate(body, max_chars);
     if let Some(notice) = notice {
         out.push_str("\n\n");
         out.push_str(&notice);
@@ -139,11 +137,11 @@ fn tabulate(items: Vec<Value>) -> Value {
 /// Tool results are fed back to the model on every later turn, so one huge result (e.g. every
 /// UEBA endpoint) can push the conversation past the model's context window. Cap each result and
 /// tell the model it was cut, so it can retry with a narrower query instead of trusting a partial.
-fn truncate(text: String) -> String {
-    if text.len() <= MAX_TOOL_RESULT_CHARS {
+fn truncate(text: String, max_chars: usize) -> String {
+    if text.len() <= max_chars {
         return text;
     }
-    let mut cut = MAX_TOOL_RESULT_CHARS;
+    let mut cut = max_chars;
     while !text.is_char_boundary(cut) {
         cut -= 1;
     }
@@ -180,7 +178,7 @@ mod tests {
 
     #[test]
     fn leaves_non_json_alone() {
-        assert_eq!(prepare("x", &json!({}), "not json".into()), "not json");
+        assert_eq!(prepare("x", &json!({}), "not json".into(), 1000), "not json");
     }
 
     #[test]

@@ -26,6 +26,12 @@ max_turns = 40
 completion_check = true
 # Output token limit per request (Claude only; OpenAI and Mistral use the model's own limit).
 max_output_tokens = 16000
+# Size cap per tool result, in characters. Log rows cost about 1 token per 1.7 characters, so
+# 20000 is roughly 12k tokens. Bigger results are cut and the AI is told to narrow its query.
+max_tool_result_chars = 20000
+# Before any tool call, the AI writes a numbered investigation plan (shown at the top of its
+# reply), then carries it out. One extra request per question; helps weaker models a lot.
+plan_first = true
 
 [providers.anthropic]
 api_key = "sk-ant-REPLACE-ME"
@@ -38,6 +44,9 @@ default_model = "gpt-4.1"
 [providers.mistral]
 api_key = "REPLACE-ME"
 default_model = "mistral-large-latest"
+# Optional, any provider: lower = steadier tool use. Unset = the provider's default. Don't set it
+# for OpenAI reasoning models, which reject it.
+temperature = 0.2
 
 # Optional: MCP servers whose tools get made available to the model (anthropic, openai, mistral).
 # Each entry's key becomes the tool name prefix, e.g. "fortianalyzer" + tool "get_alerts" is

@@ -16,12 +16,16 @@ How to investigate:
 2. Size it first: before pulling rows, get the scale with count_only or group_by / top_n over the \
 whole time window.
 3. Always pass an explicit time_range that covers the question. Never rely on a tool's default: \
-query_logs defaults to the last hour only.
+query_logs defaults to the last hour only. Minutes are only right for \"what is happening right \
+now\" questions. Discovery and inventory questions (which servers exist, who uses X, does Y \
+happen) need at least 24-hour, often 7-day: something quiet for 15 minutes is not absent.
 4. Totals, rankings, \"how many\", \"which ones\", \"top\" questions: use aggregation \
 (group_by, top_n, count_only, FortiView), which covers every match. Never count from a page of rows.
-5. When you need the rows themselves: request only the `fields` you need, raise `limit` where \
-useful, and page with fetch_more_logs(tid, offset) until you have them all or can show the rest \
-does not change the answer.
+5. Aggregate first, rows last. Pull raw rows only to look at specific events, with limit 200 or \
+less and only the `fields` you need: a big dump costs a large part of your context and gets cut \
+anyway. Page with fetch_more_logs(tid, offset) when every row matters.
+Between tool calls, write one or two sentences on what the last result showed and what you will \
+check next, so your reasoning is visible and you keep track of open leads.
 6. Follow every lead: each IP, user, host, alert or incident that matters to the question gets \
 its own check (what else did it do, is it known, where else does it appear).
 7. Verify: check that your numbers are consistent with each other, and that a surprising finding \

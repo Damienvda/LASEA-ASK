@@ -6,6 +6,11 @@ use std::path::Path;
 pub struct ProviderConfig {
     pub api_key: String,
     pub default_model: String,
+    /// Sampling temperature for tool-using conversations. Unset = the provider's default. Lower
+    /// (e.g. 0.2-0.3) makes tool use steadier. Leave unset for OpenAI reasoning models, which
+    /// reject it.
+    #[serde(default)]
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -90,6 +95,13 @@ pub struct AgentConfig {
     pub completion_check: bool,
     /// Output token limit per model request. Only sent to Anthropic, where it's mandatory.
     pub max_output_tokens: u32,
+    /// Size cap per tool result, in characters (after compaction). Log rows are mostly IPs and
+    /// numbers, which cost about 1 token per 1.7 characters, so 20k is roughly 12k tokens.
+    pub max_tool_result_chars: usize,
+    /// Before any tool call, make the model write its investigation plan (a turn with tools
+    /// disabled), then carry it out. Costs one extra request, and keeps weaker models from
+    /// stopping after the first plausible result.
+    pub plan_first: bool,
 }
 
 impl Default for AgentConfig {
@@ -98,6 +110,8 @@ impl Default for AgentConfig {
             max_turns: 40,
             completion_check: true,
             max_output_tokens: 16_000,
+            max_tool_result_chars: 20_000,
+            plan_first: true,
         }
     }
 }

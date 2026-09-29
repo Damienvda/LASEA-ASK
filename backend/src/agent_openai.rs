@@ -6,8 +6,10 @@
 //! MCP itself is model-agnostic; only the way tools are described to the model and the way the
 //! model asks to call them differs per provider, which is all this file handles.
 
-use crate::agent::{call_mcp_tool, should_check, Reply, ToolSpec, COMPLETION_CHECK};
-use crate::config::AgentConfig;
+use crate::agent::{
+    call_mcp_tool, request_plan, should_check, Reply, ToolSpec, COMPLETION_CHECK, PLAN_GO,
+};
+use crate::config::{AgentConfig, ProviderConfig};
 use crate::mcp::McpClient;
 use crate::providers::openai::{MISTRAL_API_URL, OPENAI_API_URL};
 use crate::providers::sse::sse_events;
@@ -53,7 +55,7 @@ struct ToolCallAcc {
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     endpoint: Endpoint,
-    api_key: &str,
+    provider: &ProviderConfig,
     model: &str,
     initial_messages: &[ChatMessage],
     tools: &[ToolSpec],
@@ -64,7 +66,7 @@ pub async fn run(
 ) {
     if let Err(e) = run_inner(
         &endpoint,
-        api_key,
+        provider,
         model,
         initial_messages,
         tools,
@@ -82,7 +84,7 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)]
 async fn run_inner(
     endpoint: &Endpoint,
-    api_key: &str,
+    provider: &ProviderConfig,
     model: &str,
     initial_messages: &[ChatMessage],
     tools: &[ToolSpec],
@@ -117,6 +119,12 @@ async fn run_inner(
     let mut reply = Reply::new(tx);
     let mut tools_used = 0;
     let mut checked = false;
+    // Planning turn first (see agent.rs), with tools disabled.
+    let planning = cfg.plan_first;
+    if planning {
+        request_plan(&mut messages);
+    }
+    let first_tool_turn = usize::from(planning);
 
     for turn in 0..cfg.max_turns {
         // The browser went away (Stop button, tab closed): don't keep paying for API calls and
@@ -130,9 +138,15 @@ async fn run_inner(
             "messages": messages,
             "tools": tools_json,
         });
-        // "MCP only" mode: force the first turn to call a tool (see agent.rs for why only the
-        // first turn).
-        if force_first_tool_use && turn == 0 {
+        if let Some(t) = provider.temperature {
+            body["temperature"] = json!(t);
+        }
+        if planning && turn == 0 {
+            body["tool_choice"] = json!("none");
+        }
+        // "MCP only" mode: force the first tool turn to call a tool (see agent.rs for why only
+        // that one).
+        if force_first_tool_use && turn == first_tool_turn {
             body["tool_choice"] = json!(endpoint.forced_tool_choice);
         }
         // Last turn: forbid tools so the model has to answer with what it has gathered (see
@@ -143,7 +157,7 @@ async fn run_inner(
 
         let resp = client
             .post(endpoint.api_url)
-            .bearer_auth(api_key)
+            .bearer_auth(&provider.api_key)
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -227,6 +241,12 @@ async fn run_inner(
             turn + 1
         );
 
+        if planning && turn == 0 {
+            messages.push(json!({ "role": "assistant", "content": text }));
+            messages.push(json!({ "role": "user", "content": PLAN_GO }));
+            continue;
+        }
+
         if calls.is_empty() {
             if reply.checking() {
                 reply.end_check().await;
@@ -277,7 +297,7 @@ async fn run_inner(
             } else {
                 serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}))
             };
-            let result_text = call_mcp_tool(&call.name, input, mcp_clients).await;
+            let result_text = call_mcp_tool(&call.name, input, mcp_clients, cfg).await;
 
             messages.push(json!({
                 "role": "tool",

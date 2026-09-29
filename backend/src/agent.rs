@@ -8,7 +8,7 @@
 //! check below. routes.rs picks the right loop whenever at least one MCP tool is configured, and
 //! otherwise uses the plain Provider::stream_chat path.
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, ProviderConfig};
 use crate::mcp::McpClient;
 use crate::providers::sse::sse_events;
 use crate::providers::{ChatMessage, StreamEvent};
@@ -38,11 +38,35 @@ pub const COMPLETION_CHECK: &str = "\
 [Automatic completion check from LASEASK, not written by the user.] Before your answer is final, \
 review it against the question:
 - Is any part of the question unanswered?
+- Did you carry out every step of your plan?
 - Did you treat a sample as complete (a single page, a PAGING NOTICE, a TRUNCATED result)?
 - Did you find leads (IPs, users, hosts, alerts, incidents) you did not follow up?
 - Is any statement unverified that a tool call could confirm?
 If everything is covered, reply with exactly DONE and nothing else. Otherwise, call the tools you \
 need now, then write the complete, corrected final answer (all of it, not only the additions).";
+
+/// Appended to the user's question on the planning turn (`[agent] plan_first`), which runs with
+/// tools disabled.
+const PLAN_REQUEST: &str = "\n\n[Automatic note from LASEASK: before using any tool, reply with \
+your investigation plan only: a short numbered checklist of what you will check, with which tool, \
+over which time window, and what would confirm or rule out each point. Do not answer yet.]";
+
+/// Sent after the plan to start carrying it out.
+pub const PLAN_GO: &str = "[Automatic message from LASEASK, not written by the user.] Now carry \
+out your plan with the tools, step by step, adding steps when the results call for it. Then give \
+the final answer.";
+
+/// Adds `PLAN_REQUEST` to the user's question (the last user message).
+pub fn request_plan(messages: &mut [Value]) {
+    let question = messages
+        .iter_mut()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .and_then(|m| m.get_mut("content"));
+    if let Some(Value::String(text)) = question {
+        text.push_str(PLAN_REQUEST);
+    }
+}
 
 /// Shown to the user when the completion check sends the model back to work.
 const CHECK_SEPARATOR: &str = "\n\n---\n\n*Completion check: following up on open points.*\n\n";
@@ -137,7 +161,7 @@ enum BlockAcc {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    api_key: &str,
+    provider: &ProviderConfig,
     model: &str,
     initial_messages: &[ChatMessage],
     tools: &[ToolSpec],
@@ -147,7 +171,7 @@ pub async fn run(
     tx: Sender<StreamEvent>,
 ) {
     if let Err(e) = run_inner(
-        api_key,
+        provider,
         model,
         initial_messages,
         tools,
@@ -164,7 +188,7 @@ pub async fn run(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_inner(
-    api_key: &str,
+    provider: &ProviderConfig,
     model: &str,
     initial_messages: &[ChatMessage],
     tools: &[ToolSpec],
@@ -201,6 +225,11 @@ async fn run_inner(
     let mut reply = Reply::new(tx);
     let mut tools_used = 0;
     let mut checked = false;
+    let planning = cfg.plan_first;
+    if planning {
+        request_plan(&mut messages);
+    }
+    let first_tool_turn = usize::from(planning);
 
     for turn in 0..cfg.max_turns {
         // The browser went away (Stop button, tab closed): don't keep paying for API calls and
@@ -218,12 +247,18 @@ async fn run_inner(
         if !system.is_empty() {
             body["system"] = json!(system);
         }
+        if let Some(t) = provider.temperature {
+            body["temperature"] = json!(t);
+        }
+        if planning && turn == 0 {
+            body["tool_choice"] = json!({ "type": "none" });
+        }
         // "MCP only" mode: force the very first turn to invoke a tool rather than let Claude
         // answer from its own knowledge. This is an actual API-level constraint (Anthropic's
         // tool_choice), not a prompt nudge, so it's reliable. Only the first turn — forcing it on
         // every turn would mean the model could never stop calling tools to produce a final
         // text-only answer.
-        if force_first_tool_use && turn == 0 {
+        if force_first_tool_use && turn == first_tool_turn {
             body["tool_choice"] = json!({ "type": "any" });
         }
         // Last turn: forbid tools so the model has to answer with what it has gathered, instead
@@ -234,7 +269,7 @@ async fn run_inner(
 
         let resp = client
             .post(API_URL)
-            .header("x-api-key", api_key)
+            .header("x-api-key", &provider.api_key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
             .json(&body)
@@ -357,6 +392,11 @@ async fn run_inner(
 
         messages.push(json!({ "role": "assistant", "content": content_blocks }));
 
+        if planning && turn == 0 {
+            messages.push(json!({ "role": "user", "content": PLAN_GO }));
+            continue;
+        }
+
         if tool_uses.is_empty() {
             if reply.checking() {
                 reply.end_check().await;
@@ -388,7 +428,7 @@ async fn run_inner(
                 .send(StreamEvent::ToolCall { name: qualified_name.clone() })
                 .await;
 
-            let result_text = call_mcp_tool(&qualified_name, input, mcp_clients).await;
+            let result_text = call_mcp_tool(&qualified_name, input, mcp_clients, cfg).await;
 
             tool_results.push(json!({
                 "type": "tool_result",
@@ -410,6 +450,7 @@ pub async fn call_mcp_tool(
     qualified_name: &str,
     input: Value,
     mcp_clients: &HashMap<String, Arc<McpClient>>,
+    cfg: &AgentConfig,
 ) -> String {
     let (server, tool) = qualified_name.split_once("__").unwrap_or(("", qualified_name));
 
@@ -420,7 +461,7 @@ pub async fn call_mcp_tool(
 
     match mcp_clients.get(server) {
         Some(mcp) => match mcp.call_tool(tool, input.clone()).await {
-            Ok(text) => tool_result::prepare(tool, &input, text),
+            Ok(text) => tool_result::prepare(tool, &input, text, cfg.max_tool_result_chars),
             Err(e) => format!("Error calling tool: {e:#}"),
         },
         None => format!("Error: no MCP server registered for '{server}'"),

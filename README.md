@@ -101,7 +101,8 @@ bearer_token = "your-bearer-token"
   a long tool list eats the AI's context. In a `[mcp.X]` block, `include_tools = [...]` offers
   only the listed tools and `exclude_tools = [...]` hides some (see `config.example.toml`, which
   hides the FortiAnalyzer tools that change things). The start-up log shows how many are offered.
-- **Investigations.** With tools ticked, the AI is told to size results first, use aggregation
+- **Investigations.** With tools ticked, the AI first writes a numbered plan (shown at the top of
+  its reply), then carries it out. It is told to size results first, use aggregation
   for totals, page through logs, follow up every lead and end with a "Coverage" section. When a
   result is only one page of many, the backend adds a notice telling the AI so. Before its answer
   is final, the AI is asked once whether anything is still open; if so it keeps going, shown as
