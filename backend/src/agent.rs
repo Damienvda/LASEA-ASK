@@ -209,7 +209,7 @@ async fn run_inner(
 
     let mut messages: Vec<Value> = initial_messages
         .iter()
-        .filter(|m| m.role != "system")
+        .filter(|m| m.role != "system" && !m.content.trim().is_empty())
         .map(|m| json!({ "role": m.role, "content": m.content }))
         .collect();
 
@@ -376,6 +376,9 @@ async fn run_inner(
         let mut tool_uses: Vec<(String, String, Value)> = Vec::new(); // (tool_use_id, qualified_name, input)
         for index in &order {
             match blocks.get(index) {
+                // Anthropic rejects empty text blocks when they're sent back ("text content
+                // blocks must be non-empty"), and Claude does stream some, e.g. before a tool call.
+                Some(BlockAcc::Text(text)) if text.trim().is_empty() => {}
                 Some(BlockAcc::Text(text)) => {
                     content_blocks.push(json!({ "type": "text", "text": text }));
                 }
@@ -393,6 +396,10 @@ async fn run_inner(
             }
         }
 
+        // An assistant turn with no content at all is rejected too.
+        if content_blocks.is_empty() {
+            content_blocks.push(json!({ "type": "text", "text": "(no output)" }));
+        }
         messages.push(json!({ "role": "assistant", "content": content_blocks }));
 
         if planning && turn == 0 {

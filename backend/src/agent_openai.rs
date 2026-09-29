@@ -241,6 +241,11 @@ async fn run_inner(
             turn + 1
         );
 
+        // A text-only assistant turn must not be empty (see agent.rs).
+        if text.trim().is_empty() {
+            text = "(no output)".to_string();
+        }
+
         if planning && turn == 0 {
             messages.push(json!({ "role": "assistant", "content": text }));
             messages.push(json!({ "role": "user", "content": PLAN_GO }));
