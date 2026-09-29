@@ -1,7 +1,14 @@
-/target
-/desktop/src-tauri/target
+target/
 /desktop/node_modules
-/backend/config.toml
 *.log
 .DS_Store
 Thumbs.db
+
+# Secrets: never commit these, wherever they end up in the tree. Only the *.example.* templates
+# belong in git.
+config.toml
+*.ini
+!*.example.ini
+*.pem
+*.key
+.env

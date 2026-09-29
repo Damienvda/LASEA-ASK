@@ -156,7 +156,11 @@ pub async fn chat(
     prompt_servers.dedup();
     let mut messages = vec![ChatMessage {
         role: "system".into(),
-        content: prompt::system_prompt(&prompt_servers, state.config.system_prompt.as_deref()),
+        content: prompt::system_prompt(
+            &prompt_servers,
+            &state.mcp_notes,
+            state.config.system_prompt.as_deref(),
+        ),
     }];
     messages.extend(req.messages);
 

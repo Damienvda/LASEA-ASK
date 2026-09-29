@@ -10,11 +10,11 @@
 #                    hostname1.example.com [hostname2.example.com ...]
 #
 # Examples:
-#   request-cert.sh --provider ovh --email me@lasea.com \
-#                    --credentials /etc/letsencrypt/ovh.ini laseask.lasea.com
+#   request-cert.sh --provider ovh --email me@example.com \
+#                    --credentials /etc/letsencrypt/ovh.ini laseask.example.com
 #
-#   request-cert.sh --provider cloudflare --email me@lasea.com \
-#                    --credentials /etc/letsencrypt/cloudflare.ini laseask.lasea.com chat.lasea.com
+#   request-cert.sh --provider cloudflare --email me@example.com \
+#                    --credentials /etc/letsencrypt/cloudflare.ini laseask.example.com chat.example.com
 #
 # route53 doesn't take a credentials file — it reads AWS credentials from the environment or
 # ~/.aws/credentials, so --credentials is ignored for that provider.

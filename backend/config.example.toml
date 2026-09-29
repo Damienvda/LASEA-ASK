@@ -63,6 +63,22 @@ bearer_token = "REPLACE-ME"
 #   "list_devices", "search_devices", "get_endpoints", "get_endusers",
 #   "get_indicator_enrichment", "get_system_status", "list_adoms",
 # ]
+# Your own notes for the AI about this server, added to its instructions whenever the server is
+# ticked (after the guide the MCP server itself sends at connection). Use it for what the AI keeps
+# getting wrong. These come from real investigations:
+notes = """
+- In traffic logs of DNS sessions (dstport 53), `hostname` is the name the client looked up, not
+  the name of the destination server. Traffic logs carry no reliable name for the destination.
+- group_by is refused together with a dstport filter. Use sample_by instead (a bounded sample of
+  up to 1000 logs), then exclude what you found and re-query until nothing new appears.
+- `limit` is capped at 1000.
+- Total counts over long windows are unreliable (two queries can disagree): use them to compare,
+  never as exact figures.
+- list_devices / get_device_info list the devices that send logs to FortiAnalyzer (firewalls,
+  syslog sources), not an asset or Active Directory inventory.
+- `devname` is the firewall that logged the traffic, i.e. the site.
+- To know what a machine serves, exclude action=deny: blocked scanners hit every port.
+"""
 # Never offered to the model: the tools that change things on the FortiAnalyzer.
 exclude_tools = [
   "add_device", "add_devices_bulk", "delete_device", "delete_devices_bulk",

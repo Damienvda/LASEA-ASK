@@ -27,6 +27,10 @@ pub struct McpServerConfig {
     /// `include_tools`.
     #[serde(default)]
     pub exclude_tools: Vec<String>,
+    /// Your own notes on using this server (what fields mean, known quirks), given to the model
+    /// whenever the server is ticked, after the server's own instructions.
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 impl McpServerConfig {

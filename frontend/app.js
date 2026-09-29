@@ -306,6 +306,9 @@ function appendAssistant(provider, model) {
       if (frame) cancelAnimationFrame(frame);
       frame = 0;
       wrap.classList.remove("streaming");
+      // The backend's completion check asks the model to reply "DONE" when finished; some
+      // models tack it onto the end of their answer instead.
+      text = text.replace(/\s*\**DONE\**\.?\s*$/, "");
       if (text) {
         renderBody(body, text);
         actions.hidden = false;

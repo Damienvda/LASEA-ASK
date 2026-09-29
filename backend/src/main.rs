@@ -38,12 +38,13 @@ async fn main() -> anyhow::Result<()> {
     let static_dir = config.server.static_dir.clone();
     let tls_config = config.tls.clone();
 
-    let (mcp_clients, mcp_tools) = connect_mcp_servers(&config).await;
+    let (mcp_clients, mcp_tools, mcp_notes) = connect_mcp_servers(&config).await;
 
     let state = AppState {
         config: Arc::new(config),
         mcp_clients: Arc::new(mcp_clients),
         mcp_tools: Arc::new(mcp_tools),
+        mcp_notes: Arc::new(mcp_notes),
     };
 
     let app = Router::new()
@@ -112,15 +113,27 @@ async fn serve_tls(
 /// as fatal — plain chat should still work even if an MCP server is temporarily down.
 async fn connect_mcp_servers(
     config: &Config,
-) -> (HashMap<String, Arc<McpClient>>, Vec<ToolSpec>) {
+) -> (HashMap<String, Arc<McpClient>>, Vec<ToolSpec>, HashMap<String, String>) {
     let mut clients = HashMap::new();
     let mut tools = Vec::new();
+    let mut notes = HashMap::new();
 
     for (name, cfg) in &config.mcp {
         let client = Arc::new(McpClient::new(cfg.url.clone(), cfg.bearer_token.clone()));
         match client.initialize().await {
-            Ok(()) => match client.list_tools().await {
+            Ok(instructions) => match client.list_tools().await {
                 Ok(discovered) => {
+                    let own_notes = cfg.notes.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                    let combined: Vec<&str> =
+                        instructions.as_deref().into_iter().chain(own_notes).collect();
+                    tracing::info!(
+                        "MCP '{name}': {} chars of server instructions, {} chars of config notes",
+                        instructions.as_deref().map_or(0, str::len),
+                        own_notes.map_or(0, str::len)
+                    );
+                    if !combined.is_empty() {
+                        notes.insert(name.clone(), combined.join("\n\n"));
+                    }
                     // A typo in include_tools/exclude_tools would otherwise fail silently.
                     for listed in cfg.include_tools.iter().flatten().chain(&cfg.exclude_tools) {
                         if !discovered.iter().any(|t| &t.name == listed) {
@@ -151,5 +164,5 @@ async fn connect_mcp_servers(
         }
     }
 
-    (clients, tools)
+    (clients, tools, notes)
 }

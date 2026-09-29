@@ -36,14 +36,17 @@ const API_VERSION: &str = "2023-06-01";
 /// what it skipped before the answer counts as final.
 pub const COMPLETION_CHECK: &str = "\
 [Automatic completion check from LASEASK, not written by the user.] Before your answer is final, \
-review it against the question:
-- Is any part of the question unanswered?
-- Did you carry out every step of your plan?
-- Did you treat a sample as complete (a single page, a PAGING NOTICE, a TRUNCATED result)?
-- Did you find leads (IPs, users, hosts, alerts, incidents) you did not follow up?
-- Is any statement unverified that a tool call could confirm?
+review it against the question, in this order of priority:
+1. Leads you saw but did not check: IPs, users, hosts, alerts or incidents that appeared in any \
+result (also as a client or source) and could change the answer.
+2. Completeness: did you exclude what you found and re-query until nothing new appeared? Did you \
+treat a sample as complete (a single page, a PAGING NOTICE, a TRUNCATED result)?
+3. Claims: is any statement based on a field you may have misread, or unverified when a tool \
+call could confirm it? Is any part of the question unanswered, or any plan step skipped?
+Refining numbers you already labelled as estimates is the lowest priority.
 If everything is covered, reply with exactly DONE and nothing else. Otherwise, call the tools you \
-need now, then write the complete, corrected final answer (all of it, not only the additions).";
+need now, then write the complete, corrected final answer (all of it, not only the additions, \
+and without the word DONE).";
 
 /// Appended to the user's question on the planning turn (`[agent] plan_first`), which runs with
 /// tools disabled.

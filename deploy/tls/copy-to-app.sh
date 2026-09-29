@@ -6,7 +6,7 @@
 #
 # certbot runs this as root (it's invoked from request-cert.sh's `sudo certbot ...`) and sets
 # $RENEWED_LINEAGE to the live directory for the domain that was just issued/renewed, e.g.
-# /etc/letsencrypt/live/laseask.lasea.com — see https://eff-certbot.readthedocs.io/en/stable/using.html#renewal
+# /etc/letsencrypt/live/laseask.example.com — see https://eff-certbot.readthedocs.io/en/stable/using.html#renewal
 
 set -euo pipefail
 

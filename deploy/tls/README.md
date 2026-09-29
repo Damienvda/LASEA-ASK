@@ -39,13 +39,13 @@ yours differs, or if you're on the Docker deployment option (see its note below)
 
 3. Request the certificate, for one or more hostnames:
    ```bash
-   deploy/tls/request-cert.sh --provider ovh --email you@lasea.com \
-     --credentials /etc/letsencrypt/ovh.ini laseask.lasea.com
+   deploy/tls/request-cert.sh --provider ovh --email you@example.com \
+     --credentials /etc/letsencrypt/ovh.ini laseask.example.com
    ```
    Add more hostnames to cover several names with one cert:
    ```bash
-   deploy/tls/request-cert.sh --provider ovh --email you@lasea.com \
-     --credentials /etc/letsencrypt/ovh.ini laseask.lasea.com chat.lasea.com
+   deploy/tls/request-cert.sh --provider ovh --email you@example.com \
+     --credentials /etc/letsencrypt/ovh.ini laseask.example.com chat.example.com
    ```
 
 4. Enable TLS in `backend/config.toml` (the script already copied the cert/key to

@@ -36,18 +36,21 @@ impl McpClient {
     }
 
     /// Performs the MCP handshake: `initialize` followed by the required `notifications/initialized`.
-    pub async fn initialize(&self) -> anyhow::Result<()> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": { "name": "laseask", "version": "0.1.0" }
-            }),
-        )
-        .await?;
+    /// Returns the server's `instructions`, its own guide on how to use its tools, if it sends one.
+    pub async fn initialize(&self) -> anyhow::Result<Option<String>> {
+        let params = json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "laseask", "version": "0.1.0" }
+        });
+        let result = self.request("initialize", params).await?;
         self.notify("notifications/initialized", json!({})).await?;
-        Ok(())
+        Ok(result
+            .get("instructions")
+            .and_then(|i| i.as_str())
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+            .map(str::to_string))
     }
 
     pub async fn list_tools(&self) -> anyhow::Result<Vec<McpTool>> {

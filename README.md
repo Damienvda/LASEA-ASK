@@ -108,6 +108,10 @@ bearer_token = "your-bearer-token"
   is final, the AI is asked once whether anything is still open; if so it keeps going, shown as
   "Completion check: following up on open points". Limits are in the optional `[agent]` section
   (see `config.example.toml`).
+- **Teaching the AI about a server.** The guide an MCP server sends when it connects is passed to
+  the AI automatically. Add your own lessons with `notes = """..."""` in its `[mcp.X]` block (see
+  `config.example.toml`), e.g. what a field really means. The start-up log shows how much of each
+  was loaded.
 - **Why was an answer poor?** The logs show every tool call with its arguments, each result's
   size, and each AI request's token counts:
   `docker logs laseask --since 15m | grep -E "tool|turn"` (bare metal: `journalctl -u laseask`).
