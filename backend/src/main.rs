@@ -3,6 +3,7 @@ mod agent_openai;
 mod config;
 mod error;
 mod mcp;
+mod prompt;
 mod providers;
 mod routes;
 mod state;
@@ -119,8 +120,20 @@ async fn connect_mcp_servers(
         match client.initialize().await {
             Ok(()) => match client.list_tools().await {
                 Ok(discovered) => {
-                    tracing::info!("MCP '{name}': connected, {} tool(s) available", discovered.len());
-                    for tool in discovered {
+                    // A typo in include_tools/exclude_tools would otherwise fail silently.
+                    for listed in cfg.include_tools.iter().flatten().chain(&cfg.exclude_tools) {
+                        if !discovered.iter().any(|t| &t.name == listed) {
+                            tracing::warn!("MCP '{name}': config lists tool '{listed}', which the server doesn't have");
+                        }
+                    }
+                    let total = discovered.len();
+                    let offered: Vec<_> =
+                        discovered.into_iter().filter(|t| cfg.offers(&t.name)).collect();
+                    tracing::info!(
+                        "MCP '{name}': connected, {} tool(s) available ({total} on the server)",
+                        offered.len()
+                    );
+                    for tool in offered {
                         tools.push(ToolSpec {
                             qualified_name: format!("{name}__{}", tool.name),
                             description: tool.description,

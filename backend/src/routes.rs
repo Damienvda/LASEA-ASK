@@ -2,6 +2,7 @@ use crate::agent::{self, ToolSpec};
 use crate::agent_openai;
 use crate::error::AppError;
 use crate::mcp::McpClient;
+use crate::prompt;
 use crate::providers::{provider_by_name, ChatMessage, StreamEvent};
 use crate::state::AppState;
 use axum::extract::State;
@@ -147,11 +148,22 @@ pub async fn chat(
     let has_tools = !tools.is_empty();
     let openai_endpoint = agent_openai::endpoint_for(&provider_name);
 
+    let mut prompt_servers: Vec<String> = tools
+        .iter()
+        .map(|t| tool_server(&t.qualified_name).to_string())
+        .collect();
+    prompt_servers.sort();
+    prompt_servers.dedup();
+    let mut messages = vec![ChatMessage {
+        role: "system".into(),
+        content: prompt::system_prompt(&prompt_servers, state.config.system_prompt.as_deref()),
+    }];
+    messages.extend(req.messages);
+
     let event_stream: BoxStream<'static, StreamEvent> =
         if has_tools && (provider_name == "anthropic" || openai_endpoint.is_some()) {
             let (tx, rx) = mpsc::channel::<StreamEvent>(32);
             let api_key = provider_cfg.api_key.clone();
-            let messages = req.messages.clone();
 
             tokio::spawn(async move {
                 match openai_endpoint {
@@ -179,7 +191,7 @@ pub async fn chat(
                 .ok_or_else(|| AppError::UnknownProvider(provider_name.clone()))?;
 
             provider
-                .stream_chat(&provider_cfg.api_key, &model, &req.messages)
+                .stream_chat(&provider_cfg.api_key, &model, &messages)
                 .await
                 .map_err(|e| AppError::Provider(e.to_string()))?
         };

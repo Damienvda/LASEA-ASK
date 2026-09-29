@@ -270,11 +270,85 @@ pub async fn call_mcp_tool(
 
     match mcp_clients.get(server) {
         Some(mcp) => match mcp.call_tool(tool, input).await {
-            Ok(text) => truncate_tool_result(text),
+            Ok(text) => {
+                let raw_len = text.len();
+                let compacted = compact_tool_result(text);
+                tracing::info!(
+                    "tool {qualified_name}: {raw_len} chars, {} after compaction",
+                    compacted.len()
+                );
+                truncate_tool_result(compacted)
+            }
             Err(e) => format!("Error calling tool: {e:#}"),
         },
         None => format!("Error: no MCP server registered for '{server}'"),
     }
+}
+
+/// Shrinks a JSON tool result without losing information: drops null/empty fields, turns lists of
+/// records into a column header plus rows (log results repeat every key on every record), and
+/// removes the pretty-printing whitespace. The system prompt (prompt.rs) tells the model about the
+/// `{"columns", "rows"}` shape. Non-JSON results are returned unchanged.
+fn compact_tool_result(text: String) -> String {
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v) => serde_json::to_string(&compact_value(v)).unwrap_or(text),
+        Err(_) => text,
+    }
+}
+
+fn compact_value(v: Value) -> Value {
+    match v {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, compact_value(v)))
+                .filter(|(_, v)| !is_empty(v))
+                .collect(),
+        ),
+        Value::Array(items) => {
+            let items: Vec<Value> = items.into_iter().map(compact_value).collect();
+            if items.len() >= 2 && items.iter().all(Value::is_object) {
+                tabulate(items)
+            } else {
+                Value::Array(items)
+            }
+        }
+        other => other,
+    }
+}
+
+fn is_empty(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.trim().is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Object(o) => o.is_empty(),
+        _ => false,
+    }
+}
+
+/// `items` must all be objects. Columns keep first-seen order; a record without a column gets null.
+fn tabulate(items: Vec<Value>) -> Value {
+    let mut columns: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in &items {
+        if let Value::Object(map) = item {
+            for key in map.keys() {
+                if seen.insert(key.clone()) {
+                    columns.push(key.clone());
+                }
+            }
+        }
+    }
+    let rows: Vec<Value> = items
+        .into_iter()
+        .map(|item| match item {
+            Value::Object(mut map) => Value::Array(
+                columns.iter().map(|c| map.remove(c).unwrap_or(Value::Null)).collect(),
+            ),
+            other => other,
+        })
+        .collect();
+    json!({ "columns": columns, "rows": rows })
 }
 
 /// Tool results are fed back to the model on every later turn, so one huge result (e.g. every
@@ -296,4 +370,26 @@ fn truncate_tool_result(text: String) -> String {
         text.len(),
         cut
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compact_tool_result;
+
+    #[test]
+    fn compacts_records_into_a_table() {
+        let raw = r#"{"total": 2, "note": "", "data": [
+            {"srcip": "10.0.0.1", "action": "deny", "user": null},
+            {"srcip": "10.0.0.2", "action": "accept", "port": 443}
+        ]}"#;
+        assert_eq!(
+            compact_tool_result(raw.to_string()),
+            r#"{"data":{"columns":["action","srcip","port"],"rows":[["deny","10.0.0.1",null],["accept","10.0.0.2",443]]},"total":2}"#
+        );
+    }
+
+    #[test]
+    fn leaves_non_json_alone() {
+        assert_eq!(compact_tool_result("not json".into()), "not json");
+    }
 }

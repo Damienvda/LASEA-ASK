@@ -13,6 +13,24 @@ pub struct McpServerConfig {
     pub url: String,
     #[serde(default)]
     pub bearer_token: Option<String>,
+    /// If set, only these tools (plain MCP names, without the "{server}__" prefix) are offered to
+    /// the model. Every tool description is sent with every request, so a short list saves a lot
+    /// of context.
+    #[serde(default)]
+    pub include_tools: Option<Vec<String>>,
+    /// Tools never offered to the model, e.g. ones that change things. Applied after
+    /// `include_tools`.
+    #[serde(default)]
+    pub exclude_tools: Vec<String>,
+}
+
+impl McpServerConfig {
+    pub fn offers(&self, tool: &str) -> bool {
+        self.include_tools
+            .as_ref()
+            .map_or(true, |names| names.iter().any(|n| n == tool))
+            && !self.exclude_tools.iter().any(|n| n == tool)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -74,6 +92,9 @@ pub struct Config {
     /// "fortianalyzer" entry with a "get_alerts" tool is exposed as "fortianalyzer__get_alerts".
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Optional extra instructions appended to the built-in system prompt (see prompt.rs).
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 fn default_server() -> ServerConfig {

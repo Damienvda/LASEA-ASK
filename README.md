@@ -97,6 +97,10 @@ bearer_token = "your-bearer-token"
 - In the UI's **Tools (MCP)** section, each server has a checkbox, a status dot (green = connected)
   and its tool count. Only the ticked servers' tools are offered to the AI. An unreachable server
   shows greyed out as "offline".
+- **Fewer tools = more room for data.** Every tool's description is sent with every request, so
+  a long tool list eats the AI's context. In a `[mcp.X]` block, `include_tools = [...]` offers
+  only the listed tools and `exclude_tools = [...]` hides some (see `config.example.toml`, which
+  hides the FortiAnalyzer tools that change things). The start-up log shows how many are offered.
 - When the AI uses a tool, a "🔧 fortianalyzer__X" chip appears above its reply.
 - The **MCP only** switch forces the AI to call a tool before answering, instead of answering from
   its own knowledge. It's only available with Claude, GPT or Mistral and at least one ticked server.

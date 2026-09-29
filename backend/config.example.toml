@@ -1,5 +1,11 @@
 default_provider = "anthropic"
 
+# Optional: extra instructions added to the built-in system prompt (which already gives the model
+# the current date and the rules for using tools). Must stay above the first [section].
+# system_prompt = """
+# Our office is in Belgium (Europe/Brussels time zone).
+# """
+
 [server]
 host = "0.0.0.0"
 port = 8787
@@ -29,3 +35,18 @@ default_model = "mistral-large-latest"
 [mcp.fortianalyzer]
 url = "https://REPLACE-WITH-YOUR-MCP-URL/mcp"
 bearer_token = "REPLACE-ME"
+# Every tool's description is sent with every request (73 FortiAnalyzer tools = roughly 30k
+# tokens), so offering fewer leaves more room for actual data. Names are the server's own tool
+# names, without the "fortianalyzer__" prefix. Omit include_tools to offer every tool.
+# include_tools = [
+#   "get_alerts", "get_alert_details", "get_alert_logs", "get_incidents", "get_incident",
+#   "query_logs", "fetch_more_logs", "search_ips_logs", "get_log_fields", "get_fortiview_data",
+#   "list_devices", "search_devices", "get_endpoints", "get_endusers",
+#   "get_indicator_enrichment", "get_system_status", "list_adoms",
+# ]
+# Never offered to the model: the tools that change things on the FortiAnalyzer.
+exclude_tools = [
+  "add_device", "add_devices_bulk", "delete_device", "delete_devices_bulk",
+  "create_incident", "update_incident", "acknowledge_alerts", "unacknowledge_alerts",
+  "acknowledge_ioc_events", "add_alert_comment", "update_api_ratelimit",
+]
