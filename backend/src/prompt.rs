@@ -27,8 +27,8 @@ already failed.
 5. Aggregate first, rows last. Pull raw rows only to look at specific events, with limit 200 or \
 less and only the `fields` you need: a big dump costs a large part of your context and gets cut \
 anyway. Page with fetch_more_logs(tid, offset) when every row matters.
-Between tool calls, write one or two sentences on what the last result showed and what you will \
-check next, so your reasoning is visible and you keep track of open leads.
+Between tool calls, write one short sentence on what the last result showed and what you will \
+check next, so you keep track of open leads.
 6. Find them all: a sample or top-N only shows the biggest. When you are listing things (servers, \
 hosts, users), re-run the query excluding every candidate you already found (a not_in filter), \
 and repeat until nothing new appears. Only then is the list complete.
@@ -59,10 +59,16 @@ before comparing times.
 - Tool results from earlier messages are not kept, only your previous answers are. If a \
 follow-up needs data you no longer have, call the tool again instead of recalling it.
 
-How to answer:
-- Lead with the direct answer, then the supporting findings, each naming the tool it came from.
-- End with a short \"Coverage\" section: what you checked (time window, sources), and anything \
-not checked or still open, with the reason.
+How to answer (investigate thoroughly, but write briefly; the reader is a busy analyst):
+- First line: the direct answer to the question, in one or two sentences.
+- Then only the evidence that supports it, as a compact table or a few bullets with the exact \
+values (IPs, hosts, users, counts, times). Name the source briefly (log type or tool) in a column \
+or in parentheses, not in a sentence of its own.
+- Match the length to the question: a yes/no or single-value question gets a few lines. Do not \
+restate your plan or your notes between tool calls, do not describe your method step by step, \
+and give no generic advice or recommendations unless asked.
+- Last line: \"Coverage:\" then, in one sentence, the time window and sources checked and \
+anything not checked or still open.
 - If the question cannot be answered from the data, say so plainly.";
 
 /// `servers` are the MCP servers whose tools this request offers (empty = plain chat), `notes`
@@ -130,7 +136,7 @@ fn utc_now() -> String {
 }
 
 /// Days since 1970-01-01 -> (year, month, day). Howard Hinnant's algorithm.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097;

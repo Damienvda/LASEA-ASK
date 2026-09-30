@@ -9,6 +9,7 @@
 //! otherwise uses the plain Provider::stream_chat path.
 
 use crate::config::{AgentConfig, ProviderConfig};
+use crate::intel;
 use crate::mcp::McpClient;
 use crate::providers::sse::sse_events;
 use crate::providers::{ChatMessage, StreamEvent};
@@ -46,7 +47,7 @@ call could confirm it? Is any part of the question unanswered, or any plan step 
 Refining numbers you already labelled as estimates is the lowest priority.
 If everything is covered, reply with exactly DONE and nothing else. Otherwise, call the tools you \
 need now, then write the complete, corrected final answer (all of it, not only the additions, \
-and without the word DONE).";
+and without the word DONE), as brief as the rules on answering ask.";
 
 /// Appended to the user's question on the planning turn (`[agent] plan_first`), which runs with
 /// tools disabled.
@@ -70,9 +71,6 @@ pub fn request_plan(messages: &mut [Value]) {
         text.push_str(PLAN_REQUEST);
     }
 }
-
-/// Shown to the user when the completion check sends the model back to work.
-const CHECK_SEPARATOR: &str = "\n\n---\n\n*Completion check: following up on open points.*\n\n";
 
 /// Whether to run the completion check now that the model has answered without asking for tools.
 /// Once per question, only after tools were used, and only with turns left to act on it.
@@ -131,15 +129,16 @@ impl<'a> Reply<'a> {
         self.held.clear();
     }
 
-    /// Ends the completion-check turn: if it's more than "DONE", shows the separator and what the
-    /// model said. Returns true when the model is done.
+    /// Ends the completion-check turn: if it's more than "DONE", tells the UI that what follows
+    /// supersedes the answer so far (`FollowUp`) and shows what the model said. Returns true when
+    /// the model is done.
     pub async fn end_check(&mut self) -> bool {
         self.checking = false;
         let held = std::mem::take(&mut self.held);
         if is_done(&held) {
             return true;
         }
-        self.send(CHECK_SEPARATOR).await;
+        let _ = self.tx.send(StreamEvent::FollowUp).await;
         self.emitted = true;
         self.turn_started = true;
         self.send(&held).await;
@@ -606,6 +605,16 @@ async fn call_mcp_tool(
     // fields) or paged on, so log them; capped, a filter list can be long.
     let args: String = input.to_string().chars().take(500).collect();
     tracing::info!("tool call {qualified_name} {args}");
+
+    if server == intel::SERVER {
+        return match intel::get() {
+            Some(intel) => {
+                let text = intel.lookup_many(&input).await;
+                (tool_result::truncate(text, cfg.max_tool_result_chars), true)
+            }
+            None => ("Error: intel lookups are turned off ([intel] enabled = false)".into(), false),
+        };
+    }
 
     match mcp_clients.get(server) {
         Some(mcp) => match mcp.call_tool(tool, input.clone()).await {

@@ -2,6 +2,7 @@ mod agent;
 mod agent_openai;
 mod config;
 mod error;
+mod intel;
 mod mcp;
 mod prompt;
 mod providers;
@@ -38,7 +39,17 @@ async fn main() -> anyhow::Result<()> {
     let static_dir = config.server.static_dir.clone();
     let tls_config = config.tls.clone();
 
-    let (mcp_clients, mcp_tools, mcp_notes) = connect_mcp_servers(&config).await;
+    let (mcp_clients, mut mcp_tools, mut mcp_notes) = connect_mcp_servers(&config).await;
+
+    // The built-in intel lookups show up to the model and the UI like one more MCP server.
+    if intel::init(config.intel.clone()) {
+        mcp_tools.push(ToolSpec {
+            qualified_name: format!("{}__{}", intel::SERVER, intel::TOOL),
+            description: intel::tool_description(),
+            input_schema: intel::tool_schema(),
+        });
+        mcp_notes.insert(intel::SERVER.to_string(), intel::GUIDE.to_string());
+    }
 
     let state = AppState {
         config: Arc::new(config),
@@ -50,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/providers", get(routes::list_providers))
         .route("/api/chat", post(routes::chat))
+        .route("/api/intel", get(routes::intel_lookup))
         .with_state(state)
         .fallback_service(ServeDir::new(&static_dir))
         .layer(CorsLayer::permissive())

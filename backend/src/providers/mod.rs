@@ -29,6 +29,9 @@ pub enum StreamEvent {
     /// Token usage of one model request. The UI adds up every event of a reply, so a provider may
     /// send the input and output counts in separate events.
     Usage { input_tokens: u64, output_tokens: u64, cache_read: u64, cache_write: u64 },
+    /// The completion check sent the model back to work (agent.rs): the answer so far becomes a
+    /// draft, and the UI folds it away under what follows.
+    FollowUp,
     Done,
     Error { message: String },
 }

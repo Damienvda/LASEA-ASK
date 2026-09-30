@@ -168,6 +168,44 @@ pub struct Config {
     /// Per model name, for the UI's cost estimate. Models without prices only show token counts.
     #[serde(default)]
     pub pricing: HashMap<String, ModelPricing>,
+    #[serde(default)]
+    pub intel: IntelConfig,
+}
+
+/// External threat intelligence on public IPs and domains (see intel.rs). RDAP needs no key; the
+/// other sources are used when their key is set.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct IntelConfig {
+    pub enabled: bool,
+    /// Owner, network and country of IPs, registration date of domains. Free, no key.
+    pub rdap: bool,
+    pub abuseipdb_api_key: Option<String>,
+    pub virustotal_api_key: Option<String>,
+    /// VirusTotal's free API allows 4 lookups a minute; beyond that they're skipped, not queued.
+    pub virustotal_per_minute: usize,
+    pub otx_api_key: Option<String>,
+    /// Your own domains (e.g. "example.local"), never sent out. .local, .lan, .internal, .corp,
+    /// .home and .arpa are always treated as internal, as are private IP ranges.
+    pub internal_domains: Vec<String>,
+    pub cache_hours: u64,
+    pub timeout_seconds: u64,
+}
+
+impl Default for IntelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rdap: true,
+            abuseipdb_api_key: None,
+            virustotal_api_key: None,
+            virustotal_per_minute: 4,
+            otx_api_key: None,
+            internal_domains: Vec::new(),
+            cache_hours: 24,
+            timeout_seconds: 10,
+        }
+    }
 }
 
 fn default_server() -> ServerConfig {

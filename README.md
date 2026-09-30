@@ -108,13 +108,22 @@ bearer_token = "your-bearer-token"
   a long tool list eats the AI's context. In a `[mcp.X]` block, `include_tools = [...]` offers
   only the listed tools and `exclude_tools = [...]` hides some (see `config.example.toml`, which
   hides the FortiAnalyzer tools that change things). The start-up log shows how many are offered.
-- **Investigations.** With tools ticked, the AI first writes a numbered plan (shown at the top of
-  its reply), then carries it out. It is told to size results first, use aggregation
-  for totals, page through logs, follow up every lead and end with a "Coverage" section. When a
-  result is only one page of many, the backend adds a notice telling the AI so. Before its answer
-  is final, the AI is asked once whether anything is still open; if so it keeps going, shown as
-  "Completion check: following up on open points". Limits are in the optional `[agent]` section
-  (see `config.example.toml`).
+- **Investigations.** With tools ticked, the AI first writes a numbered plan, then carries it
+  out. It is told to size results first, use aggregation for totals, page through logs and follow
+  up every lead, but to keep the answer short: the direct answer first, the evidence as a table or
+  a few bullets, and a one-line "Coverage:". The plan and the notes between tool calls are shown
+  toned down (long ones folded), so the answer stands out. When a result is only one page of
+  many, the backend adds a notice telling the AI so. Before its answer is final, the AI is asked
+  once whether anything is still open; if so it keeps going, shown as "Completion check:
+  following up on open points", and its earlier draft is folded away. Limits are in the optional
+  `[agent]` section (see `config.example.toml`).
+- **Threat intelligence on IPs and domains.** The `[intel]` section (see `config.example.toml`)
+  adds an **intel** checkbox under Tools: the AI can then look up who owns a public IP or domain,
+  its reputation and the threat reports it appears in (RDAP/WHOIS without a key; AbuseIPDB,
+  VirusTotal and AlienVault OTX with their free API keys). Every IP and domain in an answer also
+  gets a card on hover with the same information, and turns red (malicious) or orange
+  (suspicious) once looked up. Public indicators are sent to those services; private IPs and
+  `internal_domains` never are. Results are cached for `cache_hours`.
 - **Teaching the AI about a server.** The guide an MCP server sends when it connects is passed to
   the AI automatically. Add your own lessons with `notes = """..."""` in its `[mcp.X]` block (see
   `config.example.toml`), e.g. what a field really means. The start-up log shows how much of each

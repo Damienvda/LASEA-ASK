@@ -137,7 +137,7 @@ fn tabulate(items: Vec<Value>) -> Value {
 /// Tool results are fed back to the model on every later turn, so one huge result (e.g. every
 /// UEBA endpoint) can push the conversation past the model's context window. Cap each result and
 /// tell the model it was cut, so it can retry with a narrower query instead of trusting a partial.
-fn truncate(text: String, max_chars: usize) -> String {
+pub(crate) fn truncate(text: String, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text;
     }

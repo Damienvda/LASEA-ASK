@@ -88,6 +88,30 @@ const STRINGS = {
     toolCalls: "Tool calls",
     duration: "Duration",
     nothingToExport: "Nothing to export yet.",
+    followUp: "Completion check: following up on open points",
+    showMore: "show more",
+    showLess: "show less",
+    external: "external",
+    intelTitle: "External threat intelligence (RDAP, AbuseIPDB, VirusTotal, OTX). Public IPs and domains are sent to these services; private ones never are.",
+    verdict: { malicious: "malicious", suspicious: "suspicious", clean: "clean", unknown: "unknown", private: "private" },
+    privateNote: "Private address or internal domain: not looked up externally.",
+    loading: "Looking up…",
+    lookupFailed: (msg) => `Lookup failed: ${msg}`,
+    owner: "Owner",
+    network: "Network",
+    country: "Country",
+    usage: "Usage",
+    registrar: "Registrar",
+    registered: "Registered",
+    daysAgo: (n) => `${fmtInt(n)} days ago`,
+    abuse: "AbuseIPDB",
+    abuseLine: (score, reports) => `${score}% confidence · ${reports} report${reports === 1 ? "" : "s"} (90 d)`,
+    vt: "VirusTotal",
+    vtLine: (mal, susp, total) => `${mal} malicious · ${susp} suspicious / ${total} engines`,
+    otx: "OTX",
+    otxLine: (n) => `named in ${n} threat report${n === 1 ? "" : "s"}`,
+    notFound: "not in database",
+    why: "Why",
   },
   fr: {
     settings: "Réglages",
@@ -140,6 +164,30 @@ const STRINGS = {
     toolCalls: "Appels d'outils",
     duration: "Durée",
     nothingToExport: "Rien à exporter pour l'instant.",
+    followUp: "Vérification finale : suite des points ouverts",
+    showMore: "afficher plus",
+    showLess: "afficher moins",
+    external: "externe",
+    intelTitle: "Renseignement sur les menaces externe (RDAP, AbuseIPDB, VirusTotal, OTX). Les IP et domaines publics sont envoyés à ces services ; les privés jamais.",
+    verdict: { malicious: "malveillant", suspicious: "suspect", clean: "sain", unknown: "inconnu", private: "privé" },
+    privateNote: "Adresse privée ou domaine interne : pas de recherche externe.",
+    loading: "Recherche…",
+    lookupFailed: (msg) => `Échec de la recherche : ${msg}`,
+    owner: "Propriétaire",
+    network: "Réseau",
+    country: "Pays",
+    usage: "Usage",
+    registrar: "Registrar",
+    registered: "Enregistré",
+    daysAgo: (n) => `il y a ${fmtInt(n)} jours`,
+    abuse: "AbuseIPDB",
+    abuseLine: (score, reports) => `confiance ${score} % · ${reports} signalement${reports > 1 ? "s" : ""} (90 j)`,
+    vt: "VirusTotal",
+    vtLine: (mal, susp, total) => `${mal} malveillant · ${susp} suspect / ${total} moteurs`,
+    otx: "OTX",
+    otxLine: (n) => `cité dans ${n} rapport${n > 1 ? "s" : ""} de menace`,
+    notFound: "absent de la base",
+    why: "Pourquoi",
   },
 };
 
@@ -373,7 +421,8 @@ function renderMcp() {
   for (const s of mcpServers) {
     const item = document.createElement("label");
     item.className = "mcp-item" + (usable(s) ? "" : " disabled");
-    item.title = s.connected ? t("toolsAvailable", s.tool_count) : t("offlineTitle");
+    const isIntel = s.name === "intel";
+    item.title = isIntel ? t("intelTitle") : s.connected ? t("toolsAvailable", s.tool_count) : t("offlineTitle");
 
     const box = document.createElement("input");
     box.type = "checkbox";
@@ -392,7 +441,7 @@ function renderMcp() {
     name.textContent = s.name;
     const count = document.createElement("span");
     count.className = "mcp-count";
-    count.textContent = s.connected ? t("toolsCount", s.tool_count) : t("offline");
+    count.textContent = isIntel ? t("external") : s.connected ? t("toolsCount", s.tool_count) : t("offline");
 
     item.append(box, dot, name, count);
     mcpList.appendChild(item);
@@ -647,6 +696,7 @@ function appendAssistant(provider, model) {
   let frame = 0;
   let current = null; // { step, el, update } of the last step
   let dirty = null; // text/thinking step waiting for the next frame
+  const textEls = new Map(); // text step -> its element
 
   function renderStats() {
     stats.textContent = usageText(model, usage, elapsed);
@@ -665,7 +715,59 @@ function appendAssistant(provider, model) {
     const step = { kind: "text", text: "" };
     const body = document.createElement("div");
     body.className = "step text msg-body";
+    textEls.set(step, body);
     return push(step, { el: body, update: () => renderBody(body, step.text.trim()) });
+  }
+
+  function followUpStep() {
+    const step = { kind: "followup" };
+    const el = document.createElement("div");
+    el.className = "step followup";
+    el.textContent = t("followUp");
+    return push(step, { el, update() {} });
+  }
+
+  /** Text followed by a tool call or a completion-check follow-up is a working note (the plan,
+   * the notes between tool calls, a superseded draft), not the answer: shown toned down. */
+  function markInterim() {
+    let later = false;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const s = steps[i];
+      if (s.kind === "tool" || s.kind === "followup") later = true;
+      else if (s.kind === "text") textEls.get(s)?.classList.toggle("interim", later);
+    }
+  }
+
+  /** The answer itself: the text after the last tool call or follow-up. */
+  function finalText() {
+    const last = steps.findLastIndex((s) => s.kind === "tool" || s.kind === "followup");
+    return steps
+      .slice(last + 1)
+      .filter((s) => s.kind === "text")
+      .map((s) => s.text.trim())
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /** Long working notes fold to a few lines, with a toggle. */
+  function clampInterim() {
+    for (const [s, el] of textEls) {
+      el.parentNode?.querySelector(`[data-toggle-for="${el.dataset.tid}"]`)?.remove();
+      el.classList.remove("clamped");
+      if (!el.classList.contains("interim") || s.text.trim().length < 280) continue;
+      el.dataset.tid ||= String(Math.random()).slice(2);
+      el.classList.add("clamped");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "clamp-toggle";
+      btn.dataset.toggleFor = el.dataset.tid;
+      btn.textContent = t("showMore");
+      btn.addEventListener("click", () => {
+        const open = el.classList.toggle("clamped");
+        btn.textContent = open ? t("showMore") : t("showLess");
+      });
+      el.after(btn);
+    }
   }
 
   function thinkingStep() {
@@ -736,6 +838,13 @@ function appendAssistant(provider, model) {
       const step = { kind: "tool", id: ev.id, name: ev.name, args: ev.args, status: "running" };
       const view = push(step, toolRow(step));
       toolViews.set(step, view);
+      markInterim();
+      scrollToBottom();
+    },
+    followUp() {
+      flush();
+      followUpStep();
+      markInterim();
       scrollToBottom();
     },
     toolEnd(ev) {
@@ -778,6 +887,8 @@ function appendAssistant(provider, model) {
           const step = { ...s };
           const view = push(step, toolRow(step));
           toolViews.set(step, view);
+        } else if (s.kind === "followup") {
+          followUpStep();
         }
       }
       // Version 1 entries: tool names only, then the text.
@@ -814,27 +925,36 @@ function appendAssistant(provider, model) {
       if (lastText) lastText.text = strip(lastText.text);
       // Redraw every text step from its data, and drop the ones left empty (e.g. only the blank
       // line the backend puts between turns).
-      const textViews = [...stepsEl.querySelectorAll(".step.text")];
-      const textSteps = steps.filter((s) => s.kind === "text");
-      textSteps.forEach((s, i) => {
-        const el = textViews[i];
+      for (const s of steps.filter((s) => s.kind === "text")) {
+        const el = textEls.get(s);
         if (s.text.trim()) {
-          if (el) renderBody(el, s.text.trim());
+          if (el) {
+            renderBody(el, s.text.trim());
+            linkIndicators(el);
+          }
         } else {
           el?.remove();
+          textEls.delete(s);
           steps.splice(steps.indexOf(s), 1);
         }
-      });
+      }
+      markInterim();
+      clampInterim();
       renderStats();
       footer.hidden = !text && !stats.textContent;
       if (text) this.addCopy();
+    },
+    /** What goes back to the API and to Copy: the answer, or everything if there's no answer
+     * part (stopped during the tool calls). */
+    get finalText() {
+      return finalText() || text.trim();
     },
     addCopy() {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = t("copy");
       btn.addEventListener("click", async () => {
-        await copyText(text);
+        await copyText(this.finalText);
         btn.textContent = t("copied");
         setTimeout(() => (btn.textContent = t("copy")), 1500);
       });
@@ -842,6 +962,233 @@ function appendAssistant(provider, model) {
     },
   };
 }
+
+// ---------- IPs and domains: hover cards with threat intelligence ----------
+
+const IPV4 = String.raw`(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}`;
+const IPV6 = String.raw`(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}`;
+const DOMAIN = String.raw`(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:xn--[a-z0-9-]+|[a-z]{2,24})`;
+const INDICATOR_RE = new RegExp(`(?<![\\w.:-])(${IPV4}|${IPV6}|${DOMAIN})(?![\\w-]|\\.[\\w-])`, "gi");
+
+/** Generic top-level domains worth recognising. Any two-letter country code counts too, except
+ * the ones that are mostly file extensions (README.md, app.js...). */
+const GTLDS = new Set(
+  ("com net org info biz io co me tv cc app dev xyz top online site store shop club live tech cloud ai gov edu mil int " +
+    "pro mobi name link click space website fun icu buzz vip work art blog news today world email host services " +
+    "support solutions network systems security digital agency company global group zone page one win loan date " +
+    "download stream review trade party science monster cyou rest sbs cfd bond lol quest asia africa eu").split(" "),
+);
+const NOT_CCTLDS = new Set("md js py sh rs ps cs db gz rb ts hs vb so xz bz".split(" "));
+
+function isIndicator(s) {
+  if (s.includes(":")) return s.includes("::") || s.split(":").length === 8; // IPv6, not a time
+  if (/^\d/.test(s) && /^[\d.]+$/.test(s)) return true; // IPv4
+  const tld = s.toLowerCase().split(".").pop();
+  return GTLDS.has(tld) || tld.startsWith("xn--") || (tld.length === 2 && !NOT_CCTLDS.has(tld));
+}
+
+/** Wraps each IP address and domain name found in `root`'s text in a hoverable span. */
+function linkIndicators(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement.closest("a, .ioc") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    INDICATOR_RE.lastIndex = 0;
+    let match;
+    let last = 0;
+    let frag = null;
+    while ((match = INDICATOR_RE.exec(text))) {
+      const value = match[1];
+      if (!isIndicator(value)) continue;
+      frag ||= document.createDocumentFragment();
+      frag.append(text.slice(last, match.index));
+      const span = document.createElement("span");
+      span.className = "ioc";
+      span.dataset.ioc = value;
+      span.textContent = value;
+      const known = intelCache.get(value.toLowerCase());
+      if (known?.data) span.dataset.verdict = known.data.verdict || known.data.scope || "";
+      frag.append(span);
+      last = match.index + value.length;
+    }
+    if (frag) {
+      frag.append(text.slice(last));
+      node.replaceWith(frag);
+    }
+  }
+}
+
+/** indicator -> { promise, data } so each one is looked up once per page. The server caches too. */
+const intelCache = new Map();
+
+function fetchIntel(value) {
+  const key = value.toLowerCase();
+  let entry = intelCache.get(key);
+  if (!entry) {
+    entry = {};
+    entry.promise = fetch(`/api/intel?q=${encodeURIComponent(value)}`)
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        entry.data = data;
+        return data;
+      })
+      .catch((err) => {
+        intelCache.delete(key); // let a later hover retry
+        throw err;
+      });
+    intelCache.set(key, entry);
+  }
+  return entry.promise;
+}
+
+const card = document.createElement("div");
+card.id = "ioc-card";
+card.hidden = true;
+document.body.appendChild(card);
+let cardTarget = null;
+let showTimer = 0;
+let hideTimer = 0;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function cardRow(label, value) {
+  if (value == null || value === "") return null;
+  const row = el("div", "card-row");
+  row.append(el("span", "card-key", label), el("span", "card-val", String(value)));
+  return row;
+}
+
+function renderCard(value, data, error) {
+  card.innerHTML = "";
+  const head = el("div", "card-head");
+  head.append(el("span", "card-ind", value));
+  if (data) {
+    const v = data.scope === "private" ? "private" : data.verdict || "unknown";
+    head.append(el("span", `verdict v-${v}`, t("verdict")[v] || v));
+  }
+  card.append(head);
+  if (error) return card.append(el("div", "card-note err", t("lookupFailed", error)));
+  if (!data) return card.append(el("div", "card-note", t("loading")));
+  if (data.error) return card.append(el("div", "card-note err", data.error));
+  if (data.scope === "private") return card.append(el("div", "card-note", t("privateNote")));
+
+  const w = data.whois || {};
+  const vt = data.virustotal || {};
+  const ab = data.abuseipdb || {};
+  const owner = w.organisation || w.registrant || vt.as_owner || ab.isp || w.name;
+  const rows = [
+    cardRow(t("owner"), owner),
+    cardRow("ASN", vt.asn ? `AS${vt.asn}${vt.as_owner && vt.as_owner !== owner ? ` ${vt.as_owner}` : ""}` : null),
+    cardRow(t("network"), w.network || vt.network),
+    cardRow(t("country"), w.country || vt.country || ab.country),
+    cardRow(t("usage"), ab.usage_type),
+    cardRow(t("registrar"), w.registrar || vt.registrar),
+    cardRow(t("registered"), w.registered ? `${w.registered}${w.age_days != null ? ` (${t("daysAgo", w.age_days)})` : ""}` : vt.created),
+  ];
+  const section = el("div", "card-section");
+  section.append(...rows.filter(Boolean));
+  card.append(section);
+
+  const rep = el("div", "card-section");
+  if (data.abuseipdb) {
+    rep.append(cardRow(t("abuse"), t("abuseLine", ab.confidence_score ?? 0, ab.total_reports ?? 0)));
+    if (ab.report_categories?.length) rep.append(el("div", "card-tags", ab.report_categories.join(" · ")));
+  }
+  if (data.virustotal) {
+    if (vt.found === false) rep.append(cardRow(t("vt"), t("notFound")));
+    else {
+      const total = (vt.malicious || 0) + (vt.suspicious || 0) + (vt.harmless || 0) + (vt.undetected || 0);
+      rep.append(cardRow(t("vt"), t("vtLine", vt.malicious || 0, vt.suspicious || 0, total)));
+      if (vt.flagged_by?.length) rep.append(el("div", "card-tags", vt.flagged_by.slice(0, 4).join(" · ")));
+    }
+  }
+  if (data.otx) {
+    const otx = data.otx;
+    if (otx.found === false) rep.append(cardRow(t("otx"), t("notFound")));
+    else {
+      rep.append(cardRow(t("otx"), t("otxLine", otx.pulse_count || 0)));
+      for (const p of (otx.pulses || []).slice(0, 3)) {
+        const extra = [...(p.malware_families || []), p.adversary].filter(Boolean).join(", ");
+        rep.append(el("div", "card-pulse", `${p.name}${extra ? ` (${extra})` : ""}`));
+      }
+    }
+  }
+  if (rep.childElementCount) card.append(rep);
+  if (data.reasons?.length) card.append(el("div", "card-note", `${t("why")}: ${data.reasons.join("; ")}`));
+  if (data.errors?.length) card.append(el("div", "card-note err", data.errors.join(" · ")));
+}
+
+function placeCard(target) {
+  const r = target.getBoundingClientRect();
+  card.hidden = false;
+  const cw = card.offsetWidth;
+  const ch = card.offsetHeight;
+  let left = Math.min(Math.max(8, r.left), window.innerWidth - cw - 8);
+  let top = r.bottom + 6;
+  if (top + ch > window.innerHeight - 8) top = Math.max(8, r.top - ch - 6);
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
+}
+
+async function showCard(target) {
+  cardTarget = target;
+  const value = target.dataset.ioc;
+  const known = intelCache.get(value.toLowerCase());
+  renderCard(value, known?.data);
+  placeCard(target);
+  if (known?.data) return;
+  try {
+    const data = await fetchIntel(value);
+    for (const s of document.querySelectorAll(".ioc")) {
+      if (s.dataset.ioc.toLowerCase() === value.toLowerCase()) s.dataset.verdict = data.scope === "private" ? "private" : data.verdict || "";
+    }
+    if (cardTarget === target) {
+      renderCard(value, data);
+      placeCard(target);
+    }
+  } catch (err) {
+    if (cardTarget === target) {
+      renderCard(value, null, err.message || String(err));
+      placeCard(target);
+    }
+  }
+}
+
+function hideCardSoon() {
+  clearTimeout(showTimer);
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    card.hidden = true;
+    cardTarget = null;
+  }, 250);
+}
+
+messagesEl.addEventListener("mouseover", (e) => {
+  const target = e.target.closest?.(".ioc");
+  if (!target) return;
+  clearTimeout(hideTimer);
+  if (target === cardTarget && !card.hidden) return;
+  clearTimeout(showTimer);
+  showTimer = setTimeout(() => showCard(target), 350);
+});
+messagesEl.addEventListener("mouseout", (e) => {
+  if (e.target.closest?.(".ioc")) hideCardSoon();
+});
+card.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+card.addEventListener("mouseleave", hideCardSoon);
+messagesEl.addEventListener("scroll", () => {
+  card.hidden = true;
+  cardTarget = null;
+});
 
 /** Clipboard API needs HTTPS (or localhost); plain-HTTP deployments fall back to execCommand. */
 async function copyText(text) {
@@ -942,6 +1289,9 @@ async function send() {
           case "usage":
             reply.addUsage(event);
             break;
+          case "follow_up":
+            reply.followUp();
+            break;
           case "error":
             reply.error(event.message);
             break;
@@ -959,7 +1309,9 @@ async function send() {
   if (reply.text || reply.steps.length || reply.errorMessage) {
     history.push({
       role: "assistant",
-      content: reply.text,
+      // Only the answer goes back to the model next time: its working notes and superseded
+      // drafts would cost tokens and repeat what the answer says.
+      content: reply.finalText,
       provider,
       model,
       steps: reply.steps,
@@ -1068,6 +1420,7 @@ function exportMarkdown() {
     out.push(`## ${providerMeta(msg.provider || "").label} · ${msg.model || ""}`, "");
     for (const s of stepsOf(msg)) {
       if (s.kind === "text" && s.text.trim()) out.push(s.text.trim(), "");
+      else if (s.kind === "followup") out.push("---", "", `*${t("followUp")}*`, "");
       else if (s.kind === "thinking" && s.text.trim()) {
         out.push(`> **${t("thinking")}**`, ...s.text.trim().split("\n").map((l) => `> ${l}`), "");
       } else if (s.kind === "tool") {
@@ -1104,6 +1457,7 @@ function exportHtml() {
     const inner = [];
     for (const s of stepsOf(msg)) {
       if (s.kind === "text" && s.text.trim()) inner.push(`<div class="text">${mdOrPre(s.text.trim())}</div>`);
+      else if (s.kind === "followup") inner.push(`<hr><div class="dim"><em>${esc(t("followUp"))}</em></div>`);
       else if (s.kind === "thinking" && s.text.trim()) {
         inner.push(`<details class="thinking"><summary>${esc(t("thinking"))}</summary><pre>${esc(s.text.trim())}</pre></details>`);
       } else if (s.kind === "tool") {

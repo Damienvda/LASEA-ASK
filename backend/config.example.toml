@@ -94,6 +94,26 @@ exclude_tools = [
   "acknowledge_ioc_events", "add_alert_comment", "update_api_ratelimit",
 ]
 
+# Optional: external threat intelligence on public IPs and domains, as the "intel" tool (a
+# checkbox under Tools in the UI) and as hover cards on every IP/domain in the answers.
+# PUBLIC IPs and domains are sent to these services; private ranges and internal_domains never are.
+# RDAP (owner, network, country, domain age) needs no key. Each other source is used once its key
+# is set; all three have free plans.
+[intel]
+enabled = true
+# https://www.abuseipdb.com/account/api : abuse score, report categories (brute force, scan...)
+abuseipdb_api_key = ""
+# https://www.virustotal.com/gui/my-apikey : antivirus / blocklist detections
+virustotal_api_key = ""
+# The free VirusTotal API allows 4 lookups a minute; lookups beyond that are skipped.
+virustotal_per_minute = 4
+# https://otx.alienvault.com/settings : threat reports, campaigns and malware families
+otx_api_key = ""
+# Your own domains, never looked up. .local .lan .internal .corp .home .arpa are always internal.
+internal_domains = ["example.local"]
+# How long a result is reused before asking the services again.
+cache_hours = 24
+
 # Optional: model prices in US dollars per million tokens, for the cost estimate under each reply.
 # One block per model name, exactly as in default_model or the UI's model field. Models without a
 # block only show token counts. cache_read / cache_write default to the input price. Check the

@@ -6,7 +6,8 @@ use crate::mcp::McpClient;
 use crate::prompt;
 use crate::providers::{provider_by_name, ChatMessage, StreamEvent};
 use crate::state::AppState;
-use axum::extract::State;
+use crate::intel;
+use axum::extract::{Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
 use futures::stream::BoxStream;
@@ -91,6 +92,10 @@ pub async fn list_providers(State(state): State<AppState>) -> Json<ProvidersResp
                 .count(),
         })
         .collect();
+    // The built-in intel lookups get a checkbox like an MCP server (see main.rs).
+    if intel::get().is_some() {
+        mcp_servers.push(McpServerInfo { name: intel::SERVER.to_string(), connected: true, tool_count: 1 });
+    }
     mcp_servers.sort_by(|a, b| a.name.cmp(&b.name));
 
     Json(ProvidersResponse {
@@ -101,6 +106,22 @@ pub async fn list_providers(State(state): State<AppState>) -> Json<ProvidersResp
         mcp_servers,
         pricing: state.config.pricing.clone(),
     })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntelQuery {
+    q: String,
+}
+
+/// The UI's hover cards: `/api/intel?q=<ip or domain>`, same lookups and cache as the tool.
+pub async fn intel_lookup(Query(query): Query<IntelQuery>) -> Result<Json<serde_json::Value>, AppError> {
+    let intel = intel::get()
+        .ok_or_else(|| AppError::BadRequest("intel lookups are turned off ([intel] enabled = false)".into()))?;
+    let q = query.q.trim();
+    if q.is_empty() || q.len() > 300 {
+        return Err(AppError::BadRequest("q must be one IP address or domain name".into()));
+    }
+    Ok(Json(intel.lookup(q).await))
 }
 
 /// The `[mcp.<name>]` a qualified "{server}__{tool}" name belongs to.

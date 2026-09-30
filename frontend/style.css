@@ -428,6 +428,95 @@ button { cursor: pointer; }
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* Working notes (the plan, notes between tool calls, superseded drafts): toned down so the answer
+   stands out; long ones fold to a few lines. */
+.step.text.interim {
+  font-size: 12.5px;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  margin-left: 4px;
+  padding-left: 10px;
+}
+.step.text.interim h1, .step.text.interim h2, .step.text.interim h3 { font-size: 13px; margin: 6px 0 4px; }
+.step.text.interim table { font-size: 11.5px; }
+.step.text.clamped {
+  max-height: 5.2em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 55%, transparent);
+  mask-image: linear-gradient(#000 55%, transparent);
+}
+.clamp-toggle {
+  align-self: flex-start;
+  margin: -2px 0 2px 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.step.followup {
+  margin: 6px 0 2px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-strong);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--warn);
+}
+
+/* IPs and domains, with a threat-intel card on hover */
+.ioc {
+  font-family: var(--mono);
+  font-size: 0.95em;
+  border-bottom: 1px dotted var(--faint);
+  cursor: help;
+}
+.ioc:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.ioc[data-verdict="malicious"] { color: var(--danger); border-bottom: 2px solid var(--danger); }
+.ioc[data-verdict="suspicious"] { color: var(--warn); border-bottom: 2px solid var(--warn); }
+.ioc[data-verdict="clean"] { border-bottom-color: var(--ok); }
+
+#ioc-card {
+  position: fixed;
+  z-index: 50;
+  width: 360px;
+  max-width: calc(100vw - 16px);
+  max-height: 60vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--raised);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.card-ind { flex: 1; min-width: 0; font-family: var(--mono); font-weight: 700; overflow-wrap: anywhere; }
+.verdict {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid currentColor;
+}
+.v-malicious { color: var(--danger); background: var(--danger-bg); }
+.v-suspicious { color: var(--warn); }
+.v-clean { color: var(--ok); background: var(--ok-soft); }
+.v-unknown, .v-private { color: var(--muted); }
+.card-section { padding: 4px 0; border-top: 1px solid var(--border); }
+.card-row { display: flex; gap: 8px; padding: 1px 0; }
+.card-key { flex: 0 0 92px; color: var(--faint); font-family: var(--mono); font-size: 11px; }
+.card-val { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.card-tags { margin: 0 0 3px 100px; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.card-pulse { margin: 0 0 2px 100px; color: var(--muted); font-size: 11.5px; }
+.card-note { padding-top: 5px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11.5px; }
+.card-note.err { color: var(--danger); }
+
 /* Timeline rows: tool calls and thinking */
 .step.tool, .step.thinking {
   border-left: 2px solid var(--border-strong);
