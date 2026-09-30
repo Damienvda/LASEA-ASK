@@ -7,7 +7,7 @@
 //! model asks to call them differs per provider, which is all this file handles.
 
 use crate::agent::{
-    call_mcp_tool, request_plan, should_check, Reply, ToolSpec, COMPLETION_CHECK, PLAN_GO,
+    request_plan, run_tool, should_check, Reply, ToolSpec, COMPLETION_CHECK, PLAN_GO,
 };
 use crate::config::{AgentConfig, ProviderConfig};
 use crate::mcp::McpClient;
@@ -141,6 +141,10 @@ async fn run_inner(
         if let Some(t) = provider.temperature {
             body["temperature"] = json!(t);
         }
+        // OpenAI only reports token usage in a stream when asked (Mistral always does).
+        if label == "openai" {
+            body["stream_options"] = json!({ "include_usage": true });
+        }
         if planning && turn == 0 {
             body["tool_choice"] = json!("none");
         }
@@ -175,8 +179,9 @@ async fn run_inner(
         // Keyed by the tool call's `index`; OpenAI streams a call's arguments across many chunks,
         // Mistral usually sends each call whole in one chunk. Accumulating handles both.
         let mut calls: BTreeMap<u64, ToolCallAcc> = BTreeMap::new();
-        let mut input_tokens = 0;
-        let mut output_tokens = 0;
+        let mut input_tokens: u64 = 0;
+        let mut cache_read: u64 = 0;
+        let mut output_tokens: u64 = 0;
         let mut finish_reason = String::new();
         reply.start_turn();
 
@@ -194,6 +199,13 @@ async fn run_inner(
             if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
                 input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
                 output_tokens = usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
+                // OpenAI counts cached tokens inside prompt_tokens; split them out so the UI
+                // counts them like Anthropic's (input = uncached only).
+                cache_read = usage
+                    .pointer("/prompt_tokens_details/cached_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                input_tokens = input_tokens.saturating_sub(cache_read);
             }
             if let Some(reason) = v.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
                 finish_reason = reason.to_string();
@@ -207,6 +219,10 @@ async fn run_inner(
             if !chunk.is_empty() {
                 text.push_str(&chunk);
                 reply.text(&chunk).await;
+            }
+            let thought = thinking_text(delta.get("content"));
+            if !thought.is_empty() {
+                let _ = tx.send(StreamEvent::Thinking { text: thought }).await;
             }
 
             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -240,6 +256,9 @@ async fn run_inner(
             "{label} turn {}: {input_tokens} input tokens, {output_tokens} output tokens, finish: {finish_reason}",
             turn + 1
         );
+        let _ = tx
+            .send(StreamEvent::Usage { input_tokens, output_tokens, cache_read, cache_write: 0 })
+            .await;
 
         // A text-only assistant turn must not be empty (see agent.rs).
         if text.trim().is_empty() {
@@ -295,14 +314,12 @@ async fn run_inner(
         }));
 
         for call in calls.into_values() {
-            let _ = tx.send(StreamEvent::ToolCall { name: call.name.clone() }).await;
-
             let input: Value = if call.arguments.trim().is_empty() {
                 json!({})
             } else {
                 serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}))
             };
-            let result_text = call_mcp_tool(&call.name, input, mcp_clients, cfg).await;
+            let result_text = run_tool(tx, &call.id, &call.name, input, mcp_clients, cfg).await;
 
             messages.push(json!({
                 "role": "tool",
@@ -349,4 +366,19 @@ fn content_text(content: Option<&Value>) -> String {
             .collect(),
         _ => String::new(),
     }
+}
+
+/// Magistral's reasoning: `{"type": "thinking", "thinking": [{"type": "text", "text": ...}]}`
+/// chunks in the same `delta.content` array.
+fn thinking_text(content: Option<&Value>) -> String {
+    let Some(Value::Array(parts)) = content else {
+        return String::new();
+    };
+    parts
+        .iter()
+        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+        .filter_map(|p| p.get("thinking").and_then(|t| t.as_array()))
+        .flatten()
+        .filter_map(|t| t.get("text").and_then(|t| t.as_str()))
+        .collect()
 }

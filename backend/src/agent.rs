@@ -4,7 +4,7 @@
 //!
 //! The wire format here is Anthropic-specific (content-block streaming, `tool_use`/`tool_result`
 //! blocks). OpenAI-compatible providers (OpenAI, Mistral) use a different tool-calling format and
-//! have their own loop in agent_openai.rs; both share `call_mcp_tool`, `Reply` and the completion
+//! have their own loop in agent_openai.rs; both share `run_tool`, `Reply` and the completion
 //! check below. routes.rs picks the right loop whenever at least one MCP tool is configured, and
 //! otherwise uses the plain Provider::stream_chat path.
 
@@ -243,6 +243,7 @@ async fn run_inner(
     let first_tool_turn = usize::from(planning);
     let mut forced_tool_use_supported = true;
     let mut effort_supported = true;
+    let mut thinking_display_supported = provider.show_thinking;
 
     for turn in 0..cfg.max_turns {
         // The browser went away (Stop button, tab closed): don't keep paying for API calls and
@@ -265,6 +266,11 @@ async fn run_inner(
         }
         if let Some(effort) = provider.effort.as_deref().filter(|_| effort_supported) {
             body["output_config"] = json!({ "effort": effort });
+        }
+        // Current models think on every request, but stream it as empty text unless asked for a
+        // readable summary. The UI shows it folded; the model's work is the same either way.
+        if thinking_display_supported {
+            body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
         }
         // Every turn resends the whole conversation (tools, system prompt, all tool results so
         // far). Automatic caching bills the part already sent at the cache-read price (a tenth
@@ -324,6 +330,18 @@ async fn run_inner(
                 }
                 continue;
             }
+            // Older models (Haiku 4.5 and earlier) don't take adaptive thinking.
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && body.get("thinking").is_some()
+                && text.contains("thinking")
+            {
+                tracing::warn!("{model} rejects adaptive thinking; continuing without it");
+                thinking_display_supported = false;
+                if let Some(obj) = body.as_object_mut() {
+                    obj.remove("thinking");
+                }
+                continue;
+            }
             // Same for sampling parameters, which Opus 4.7+ / Sonnet 5 and newer reject.
             if status == reqwest::StatusCode::BAD_REQUEST
                 && body.get("temperature").is_some()
@@ -343,10 +361,10 @@ async fn run_inner(
         // Per-content-block accumulators, indexed by the block's `index` in this turn.
         let mut blocks: HashMap<u64, BlockAcc> = HashMap::new();
         let mut order: Vec<u64> = Vec::new();
-        let mut input_tokens = 0;
-        let mut cache_read = 0;
-        let mut cache_write = 0;
-        let mut output_tokens = 0;
+        let mut input_tokens: u64 = 0;
+        let mut cache_read: u64 = 0;
+        let mut cache_write: u64 = 0;
+        let mut output_tokens: u64 = 0;
         let mut stop_reason = String::new();
         reply.start_turn();
 
@@ -415,6 +433,9 @@ async fn run_inner(
                             if let Some(BlockAcc::Thinking { thinking, .. }) = blocks.get_mut(&index) {
                                 thinking.push_str(part);
                             }
+                            if !part.is_empty() {
+                                let _ = tx.send(StreamEvent::Thinking { text: part.to_string() }).await;
+                            }
                         }
                         Some("signature_delta") => {
                             let part = delta.get("signature").and_then(|t| t.as_str()).unwrap_or("");
@@ -442,6 +463,9 @@ async fn run_inner(
             "anthropic turn {}: {input_tokens} input tokens (+{cache_read} from cache, {cache_write} written to cache), {output_tokens} output tokens, stop: {stop_reason}",
             turn + 1
         );
+        let _ = tx
+            .send(StreamEvent::Usage { input_tokens, output_tokens, cache_read, cache_write })
+            .await;
 
         // Reconstruct the assistant turn's content blocks, in the order they streamed.
         let mut content_blocks: Vec<Value> = Vec::new();
@@ -517,11 +541,8 @@ async fn run_inner(
 
         let mut tool_results: Vec<Value> = Vec::new();
         for (tool_use_id, qualified_name, input) in tool_uses {
-            let _ = tx
-                .send(StreamEvent::ToolCall { name: qualified_name.clone() })
-                .await;
-
-            let result_text = call_mcp_tool(&qualified_name, input, mcp_clients, cfg).await;
+            let result_text =
+                run_tool(tx, &tool_use_id, &qualified_name, input, mcp_clients, cfg).await;
 
             tool_results.push(json!({
                 "type": "tool_result",
@@ -536,15 +557,49 @@ async fn run_inner(
     anyhow::bail!("tool-use loop exceeded {} turns without a final answer", cfg.max_turns)
 }
 
-/// Routes a "{server}__{tool}" call to the right MCP server and returns the text to feed back to
-/// the model. Failures come back as text too, so the model can see and react to them. Shared by
-/// this loop and the OpenAI-compatible one in agent_openai.rs.
-pub async fn call_mcp_tool(
+/// Characters of each tool result sent to the UI's timeline (the model gets the whole result).
+const EXCERPT_CHARS: usize = 1500;
+
+/// Runs one tool call for either loop and tells the UI about it: `ToolStart` before, `ToolEnd`
+/// (status, duration, size, excerpt) after. Returns the text to feed back to the model.
+pub async fn run_tool(
+    tx: &Sender<StreamEvent>,
+    id: &str,
     qualified_name: &str,
     input: Value,
     mcp_clients: &HashMap<String, Arc<McpClient>>,
     cfg: &AgentConfig,
 ) -> String {
+    let _ = tx
+        .send(StreamEvent::ToolStart {
+            id: id.to_string(),
+            name: qualified_name.to_string(),
+            args: input.clone(),
+        })
+        .await;
+    let started = std::time::Instant::now();
+    let (text, ok) = call_mcp_tool(qualified_name, input, mcp_clients, cfg).await;
+    let _ = tx
+        .send(StreamEvent::ToolEnd {
+            id: id.to_string(),
+            ok,
+            duration_ms: started.elapsed().as_millis() as u64,
+            chars: text.chars().count(),
+            excerpt: text.chars().take(EXCERPT_CHARS).collect(),
+        })
+        .await;
+    text
+}
+
+/// Routes a "{server}__{tool}" call to the right MCP server and returns the text to feed back to
+/// the model, and whether the call succeeded. Failures come back as text too, so the model can
+/// see and react to them.
+async fn call_mcp_tool(
+    qualified_name: &str,
+    input: Value,
+    mcp_clients: &HashMap<String, Arc<McpClient>>,
+    cfg: &AgentConfig,
+) -> (String, bool) {
     let (server, tool) = qualified_name.split_once("__").unwrap_or(("", qualified_name));
 
     // The arguments are what shows whether the model narrowed its query (time range, filters,
@@ -554,10 +609,10 @@ pub async fn call_mcp_tool(
 
     match mcp_clients.get(server) {
         Some(mcp) => match mcp.call_tool(tool, input.clone()).await {
-            Ok(text) => tool_result::prepare(tool, &input, text, cfg.max_tool_result_chars),
-            Err(e) => format!("Error calling tool: {e:#}"),
+            Ok(text) => (tool_result::prepare(tool, &input, text, cfg.max_tool_result_chars), true),
+            Err(e) => (format!("Error calling tool: {e:#}"), false),
         },
-        None => format!("Error: no MCP server registered for '{server}'"),
+        None => (format!("Error: no MCP server registered for '{server}'"), false),
     }
 }
 

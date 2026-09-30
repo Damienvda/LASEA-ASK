@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -16,6 +16,27 @@ pub struct ProviderConfig {
     /// want "high" or more.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Anthropic only: ask for a readable summary of the model's thinking, shown folded in the
+    /// UI. Off = thinking still happens but streams as empty text.
+    #[serde(default = "default_true")]
+    pub show_thinking: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Prices of one model in US dollars per million tokens, for the cost estimate under each reply.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ModelPricing {
+    pub input: f64,
+    pub output: f64,
+    /// Tokens read from the prompt cache. Unset = the input price.
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    /// Tokens written to the prompt cache (Anthropic). Unset = the input price.
+    #[serde(default)]
+    pub cache_write: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -144,6 +165,9 @@ pub struct Config {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub agent: AgentConfig,
+    /// Per model name, for the UI's cost estimate. Models without prices only show token counts.
+    #[serde(default)]
+    pub pricing: HashMap<String, ModelPricing>,
 }
 
 fn default_server() -> ServerConfig {

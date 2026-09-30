@@ -1,5 +1,6 @@
 use crate::agent::{self, ToolSpec};
 use crate::agent_openai;
+use crate::config::ModelPricing;
 use crate::error::AppError;
 use crate::mcp::McpClient;
 use crate::prompt;
@@ -49,6 +50,8 @@ pub struct McpServerInfo {
 
 #[derive(Debug, Serialize)]
 pub struct ProvidersResponse {
+    /// The backend's version (Cargo.toml), shown in the sidebar.
+    pub version: &'static str,
     pub default_provider: String,
     pub providers: Vec<ProviderInfo>,
     /// Qualified MCP tool names currently available to tool-capable providers, purely
@@ -56,6 +59,8 @@ pub struct ProvidersResponse {
     pub mcp_tools: Vec<String>,
     /// Every configured MCP server, connected or not, so the UI can offer one checkbox each.
     pub mcp_servers: Vec<McpServerInfo>,
+    /// `[pricing]` from config.toml, keyed by model name, for the cost estimate under replies.
+    pub pricing: HashMap<String, ModelPricing>,
 }
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<ProvidersResponse> {
@@ -89,10 +94,12 @@ pub async fn list_providers(State(state): State<AppState>) -> Json<ProvidersResp
     mcp_servers.sort_by(|a, b| a.name.cmp(&b.name));
 
     Json(ProvidersResponse {
+        version: env!("CARGO_PKG_VERSION"),
         default_provider: state.config.default_provider.clone(),
         providers,
         mcp_tools: state.mcp_tools.iter().map(|t| t.qualified_name.clone()).collect(),
         mcp_servers,
+        pricing: state.config.pricing.clone(),
     })
 }
 

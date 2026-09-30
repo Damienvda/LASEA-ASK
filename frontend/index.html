@@ -11,56 +11,66 @@
 </head>
 <body>
 <div id="app">
-  <aside id="sidebar" aria-label="Settings">
+  <aside id="sidebar" data-i18n-aria="settings">
     <div class="sidebar-head">
-      <span id="brand"><span class="brand-mark">◆</span> LASEASK</span>
-      <button id="close-sidebar" class="icon-btn only-mobile" aria-label="Close settings">✕</button>
+      <span id="brand"><span class="brand-mark">◆</span> LASEASK <span id="version" class="tag"></span></span>
+      <button id="close-sidebar" class="icon-btn only-mobile" data-i18n-aria="closeSettings">✕</button>
     </div>
 
-    <button id="new-chat-btn" class="new-chat">＋ New chat</button>
+    <button id="new-chat-btn" class="new-chat" data-i18n="newChat">+ New chat</button>
 
     <section class="panel">
-      <h2>AI</h2>
-      <div id="provider-buttons" class="provider-grid" role="radiogroup" aria-label="AI provider"></div>
+      <h2 data-i18n="ai">AI</h2>
+      <div id="provider-buttons" class="provider-grid" role="radiogroup" data-i18n-aria="aiProvider"></div>
       <label class="field">
-        <span>Model</span>
+        <span data-i18n="model">Model</span>
         <input id="model-input" type="text" spellcheck="false" autocomplete="off" />
       </label>
     </section>
 
     <section class="panel">
-      <h2>Tools (MCP)</h2>
+      <h2 data-i18n="tools">Tools (MCP)</h2>
       <div id="mcp-list" class="mcp-list"></div>
       <p id="mcp-hint" class="hint" hidden></p>
-      <label id="mcp-only-label" class="switch" title="Force the AI to consult a selected MCP tool before answering">
+      <label id="mcp-only-label" class="switch" data-i18n-title="mcpOnlyTitle">
         <input type="checkbox" id="mcp-only-toggle" />
         <span class="switch-track"><span class="switch-thumb"></span></span>
-        <span>MCP only</span>
+        <span data-i18n="mcpOnly">MCP only</span>
       </label>
     </section>
 
-    <p class="sidebar-foot">Conversations are stored in this browser only.</p>
+    <section class="panel">
+      <h2 data-i18n="conversation">Conversation</h2>
+      <div id="conv-stats" class="conv-stats"></div>
+      <div class="export-row">
+        <button id="export-md" type="button" class="ghost-btn" data-i18n="exportMd">Export .md</button>
+        <button id="export-html" type="button" class="ghost-btn" data-i18n="exportHtml">Export .html</button>
+      </div>
+    </section>
+
+    <p class="sidebar-foot" data-i18n="storedLocally">Conversations are stored in this browser only.</p>
   </aside>
   <div id="backdrop" hidden></div>
 
   <div id="main">
     <header id="mobile-bar" class="only-mobile">
-      <button id="open-sidebar" class="icon-btn" aria-label="Open settings">☰</button>
+      <button id="open-sidebar" class="icon-btn" data-i18n-aria="openSettings">☰</button>
       <span id="mobile-title"></span>
     </header>
 
     <main id="messages">
       <div id="empty-state">
         <div class="empty-mark">◆</div>
-        <h1>How can I help?</h1>
+        <h1 data-i18n="emptyTitle">How can I help?</h1>
         <p id="empty-sub"></p>
       </div>
     </main>
 
     <footer id="composer-wrap">
       <div id="composer">
-        <textarea id="input" placeholder="Message LASEASK..." rows="1"></textarea>
-        <button id="send-btn" class="send" aria-label="Send">↑</button>
+        <span class="prompt-mark">&gt;</span>
+        <textarea id="input" data-i18n-placeholder="placeholder" rows="1"></textarea>
+        <button id="send-btn" class="send" data-i18n-aria="send">↑</button>
       </div>
       <div id="composer-meta"></div>
     </footer>

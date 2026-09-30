@@ -30,11 +30,15 @@ impl Provider for OpenAiProvider {
             .map(|m| json!({ "role": m.role, "content": m.content }))
             .collect();
 
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "stream": true,
             "messages": turns,
         });
+        // OpenAI only reports token usage in a stream when asked (Mistral always does).
+        if self.label == "openai" {
+            body["stream_options"] = json!({ "include_usage": true });
+        }
 
         let client = reqwest::Client::new();
         let resp = client
@@ -72,6 +76,19 @@ fn parse_openai_event(data: &str, label: &str) -> StreamEvent {
             .map(str::to_string)
             .unwrap_or_else(|| format!("unknown {label} error"));
         return StreamEvent::Error { message };
+    }
+
+    // The last chunk carries the usage (with Mistral, alongside finish_reason). Cached tokens are
+    // counted inside prompt_tokens; split them out like Anthropic's counts.
+    if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
+        let count = |path: &str| usage.pointer(path).and_then(|n| n.as_u64()).unwrap_or(0);
+        let cache_read = count("/prompt_tokens_details/cached_tokens");
+        return StreamEvent::Usage {
+            input_tokens: count("/prompt_tokens").saturating_sub(cache_read),
+            output_tokens: count("/completion_tokens"),
+            cache_read,
+            cache_write: 0,
+        };
     }
 
     let choice = v.get("choices").and_then(|c| c.get(0));

@@ -70,7 +70,21 @@ fn parse_anthropic_event(data: &str) -> StreamEvent {
         Ok(v) => v,
         Err(_) => return StreamEvent::Delta { text: String::new() },
     };
+    let count = |path: &str| v.pointer(path).and_then(|n| n.as_u64()).unwrap_or(0);
     match v.get("type").and_then(|t| t.as_str()) {
+        // Input counts come first, the output count at the end; the UI adds them up.
+        Some("message_start") => StreamEvent::Usage {
+            input_tokens: count("/message/usage/input_tokens"),
+            output_tokens: 0,
+            cache_read: count("/message/usage/cache_read_input_tokens"),
+            cache_write: count("/message/usage/cache_creation_input_tokens"),
+        },
+        Some("message_delta") => StreamEvent::Usage {
+            input_tokens: 0,
+            output_tokens: count("/usage/output_tokens"),
+            cache_read: 0,
+            cache_write: 0,
+        },
         Some("content_block_delta") => {
             let text = v
                 .get("delta")

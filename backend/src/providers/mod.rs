@@ -17,9 +17,18 @@ pub struct ChatMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     Delta { text: String },
-    /// Emitted by the tool-use agent loop (see agent.rs) right before it calls an MCP tool, so
-    /// the UI can show a "using tool X" indicator while the call is in flight.
-    ToolCall { name: String },
+    /// The model's reasoning, streamed as it comes (Claude's summarized thinking, Magistral's
+    /// thinking chunks). Shown folded in the UI; never part of the answer text.
+    Thinking { text: String },
+    /// Emitted by the tool-use loops (see agent.rs) right before an MCP tool call, so the UI can
+    /// show it in its timeline while the call is in flight. `id` pairs it with its `ToolEnd`.
+    ToolStart { id: String, name: String, args: serde_json::Value },
+    /// The call finished: whether it succeeded, how long it took, the size of the result fed to
+    /// the model and its first characters.
+    ToolEnd { id: String, ok: bool, duration_ms: u64, chars: usize, excerpt: String },
+    /// Token usage of one model request. The UI adds up every event of a reply, so a provider may
+    /// send the input and output counts in separate events.
+    Usage { input_tokens: u64, output_tokens: u64, cache_read: u64, cache_write: u64 },
     Done,
     Error { message: String },
 }

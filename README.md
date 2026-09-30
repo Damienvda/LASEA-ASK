@@ -85,6 +85,12 @@ bearer_token = "your-bearer-token"
   pay-per-use API keys, billed separately from any Claude.ai or ChatGPT subscription.
 - `default_model` is the model used by default. Any other model name (e.g. `mistral-medium-latest`,
   `mistral-small-latest`) can be typed in the UI's **Model** box.
+- **Cost estimate.** Each reply shows its duration and token counts. Add a
+  `[pricing."<model name>"]` block (prices in dollars per million tokens, see
+  `config.example.toml`) and it also shows an estimated cost, added up per conversation in the
+  sidebar. It's an estimate: the provider's invoice is what counts.
+- **Thinking.** Claude's reasoning is shown folded ("Thinking") between the steps of a reply;
+  `show_thinking = false` in `[providers.anthropic]` turns it off.
 
 ### MCP servers (optional)
 
@@ -116,7 +122,9 @@ bearer_token = "your-bearer-token"
 - **Why was an answer poor?** The logs show every tool call with its arguments, each result's
   size, and each AI request's token counts:
   `docker logs laseask --since 15m | grep -E "tool|turn"` (bare metal: `journalctl -u laseask`).
-- When the AI uses a tool, a "🔧 fortianalyzer__X" chip appears above its reply.
+- Each tool call appears in the reply's timeline, live: status (running, ✓ done, ✕ error),
+  duration and result size. Click a row to see the arguments and the first 1500 characters of the
+  result.
 - The **MCP only** switch forces the AI to call a tool before answering, instead of answering from
   its own knowledge. It's only available with Claude, GPT or Mistral and at least one ticked server.
 - Already using the FortiAnalyzer MCP in Claude Code? Its URL and token are in `~/.claude.json` on
@@ -667,6 +675,10 @@ bare-metal layout (`/opt/laseask`); with Docker, see the note in `deploy/tls/REA
   plain chat.
 - **New chat**: the **+ New chat** button. Conversations are stored in your browser only (not on
   the server), per browser and per machine.
-- **Stop a reply**: the send button turns into a stop button while the AI answers.
+- **Stop a reply**: the send button turns into a stop button while the AI answers (or press Esc).
+- **Share a conversation**: **Copy** under a reply copies its text (Markdown). **Export .md** /
+  **Export .html** in the sidebar download the whole conversation, tool calls included (arguments
+  and result excerpts, so they may contain IPs and hostnames from the logs).
+- **Language**: the UI is in French when the browser prefers French, in English otherwise.
 - **Add an AI, rotate a key, add an MCP server**: edit the config file, then restart
   (see the table in "Which guide do I follow?").
