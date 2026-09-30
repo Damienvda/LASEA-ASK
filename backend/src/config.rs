@@ -149,11 +149,15 @@ impl Default for AgentConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
+    /// Only needed for LASEASK's own chat (its console, /api/chat, /v1). A tool server for Open
+    /// WebUI, where the models are set up in Open WebUI, needs no provider at all.
+    #[serde(default)]
     pub default_provider: String,
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
     /// Optional MCP servers whose tools get made available to tool-capable providers (see
     /// backend/src/agent.rs and agent_openai.rs). Each key becomes the tool name prefix, e.g. a
@@ -170,6 +174,179 @@ pub struct Config {
     pub pricing: HashMap<String, ModelPricing>,
     #[serde(default)]
     pub intel: IntelConfig,
+    /// The OpenAI-compatible API (/v1) through which Open WebUI uses LASEASK (openai_compat.rs).
+    #[serde(default)]
+    pub openwebui: OpenWebUiConfig,
+    /// LASEASK's tools as an MCP server that Open WebUI connects to (tool_server.rs).
+    #[serde(default)]
+    pub tool_server: ToolServerConfig,
+}
+
+/// Open WebUI is the tool; LASEASK serves it the MCP tools (FortiAnalyzer through `[mcp.*]`,
+/// with include/exclude_tools and result compaction, plus "intel") on POST /mcp.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct ToolServerConfig {
+    pub enabled: bool,
+    /// Bearer token Open WebUI sends (its MCP connection's auth). At least 16 characters.
+    pub api_key: String,
+    /// Which `[mcp.<name>]` servers (and "intel") to serve. Unset = all of them.
+    pub servers: Option<Vec<String>>,
+}
+
+impl ToolServerConfig {
+    pub fn serves(&self, server: &str) -> bool {
+        self.servers.as_ref().map_or(true, |s| s.iter().any(|n| n == server))
+    }
+}
+
+/// Open WebUI in front, LASEASK as its engine: Open WebUI sees each entry of `models` as a model
+/// it can chat with, and every request runs through the same agent, tools and prompt as the
+/// LASEASK UI.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct OpenWebUiConfig {
+    pub enabled: bool,
+    /// Shared secret Open WebUI sends as "Authorization: Bearer <api_key>" (its OPENAI_API_KEYS).
+    /// Required when enabled; at least 16 characters.
+    pub api_key: String,
+    /// false (default): while tools are in use, the text the model writes between tool calls goes
+    /// to Open WebUI's folded "Thought" block and only the final answer appears as the reply, once
+    /// complete. true: all text streams straight into the reply.
+    pub live_answer: bool,
+    /// Language of the tool timeline and summary shown in the "Thought" block: "fr" or "en".
+    pub language: String,
+    /// The models Open WebUI can pick. Empty = "laseask" (all tools) and "laseask-chat" (no tools).
+    pub models: Vec<OpenWebUiModel>,
+    /// Also offer one model per `[providers.*]` ("laseask-anthropic", "laseask-mistral"...), with
+    /// all tools and the provider's default_model. Any "<provider>/<model>" id (e.g.
+    /// "anthropic/claude-sonnet-5-5") is accepted too, like the LASEASK UI's free model field:
+    /// add such ids in Open WebUI's connection settings to see them in its model list.
+    pub provider_models: bool,
+}
+
+impl Default for OpenWebUiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            live_answer: false,
+            language: "fr".to_string(),
+            models: Vec::new(),
+            provider_models: true,
+        }
+    }
+}
+
+impl OpenWebUiConfig {
+    pub fn model_list(&self) -> Vec<OpenWebUiModel> {
+        if !self.models.is_empty() {
+            return self.models.clone();
+        }
+        vec![
+            OpenWebUiModel {
+                id: "laseask".into(),
+                name: Some("LASEASK".into()),
+                provider: None,
+                model: None,
+                tools: true,
+                mcp_servers: None,
+                mcp_only: false,
+            },
+            OpenWebUiModel {
+                id: "laseask-chat".into(),
+                name: Some("LASEASK (sans outils)".into()),
+                provider: None,
+                model: None,
+                tools: false,
+                mcp_servers: None,
+                mcp_only: false,
+            },
+        ]
+    }
+
+    /// Everything /v1/models lists: the configured models, then one per provider (unless an id
+    /// is already taken or provider_models = false), in a stable order.
+    pub fn all_models(&self, providers: &HashMap<String, ProviderConfig>) -> Vec<OpenWebUiModel> {
+        let mut all = self.model_list();
+        if self.provider_models {
+            let mut names: Vec<&String> = providers.keys().collect();
+            names.sort();
+            for name in names {
+                let id = format!("laseask-{name}");
+                if all.iter().any(|m| m.id == id) {
+                    continue;
+                }
+                let cfg = &providers[name];
+                all.push(OpenWebUiModel {
+                    id,
+                    name: Some(format!("LASEASK · {name} · {}", cfg.default_model)),
+                    provider: Some(name.clone()),
+                    model: None,
+                    tools: true,
+                    mcp_servers: None,
+                    mcp_only: false,
+                });
+            }
+        }
+        all
+    }
+
+    /// The model behind an id Open WebUI sends: a listed one, or "<provider>/<model>" (also with
+    /// a "laseask/" prefix) for any model of a configured provider, with all tools.
+    pub fn resolve(&self, providers: &HashMap<String, ProviderConfig>, id: &str) -> Option<OpenWebUiModel> {
+        if let Some(m) = self.all_models(providers).into_iter().find(|m| m.id == id) {
+            return Some(m);
+        }
+        if !self.provider_models {
+            return None;
+        }
+        let rest = id.strip_prefix("laseask/").unwrap_or(id);
+        let (provider, model) = rest.split_once('/')?;
+        if model.trim().is_empty() || !providers.contains_key(provider) {
+            return None;
+        }
+        Some(OpenWebUiModel {
+            id: id.to_string(),
+            name: None,
+            provider: Some(provider.to_string()),
+            model: Some(model.trim().to_string()),
+            tools: true,
+            mcp_servers: None,
+            mcp_only: false,
+        })
+    }
+}
+
+/// One model as Open WebUI sees it: a provider/model pair plus which tools it gets.
+#[derive(Debug, Deserialize, Clone)]
+pub struct OpenWebUiModel {
+    /// The model id Open WebUI shows and sends back, e.g. "laseask".
+    pub id: String,
+    /// Display name. Unset = the id.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A `[providers.<name>]` key. Unset = default_provider.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Unset = the provider's default_model.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// false = plain chat, no tools (e.g. for Open WebUI's titles, tags and follow-up questions).
+    #[serde(default = "default_true")]
+    pub tools: bool,
+    /// Which `[mcp.<name>]` servers (and "intel") to offer. Unset = all of them.
+    #[serde(default)]
+    pub mcp_servers: Option<Vec<String>>,
+    /// Force a tool call before answering (the LASEASK UI's "MCP only").
+    #[serde(default)]
+    pub mcp_only: bool,
+}
+
+impl OpenWebUiModel {
+    pub fn display_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.id.clone())
+    }
 }
 
 /// External threat intelligence on public IPs and domains (see intel.rs). RDAP needs no key; the
@@ -225,18 +402,49 @@ impl Config {
             )
         })?;
         let cfg: Config = toml::from_str(&raw)?;
-        if !cfg.providers.contains_key(&cfg.default_provider) {
+        let chat_configured = !cfg.default_provider.is_empty() || !cfg.providers.is_empty();
+        if chat_configured && !cfg.providers.contains_key(&cfg.default_provider) {
             anyhow::bail!(
                 "default_provider '{}' has no matching [providers.{}] section",
                 cfg.default_provider,
                 cfg.default_provider
             );
         }
+        if !chat_configured && !cfg.tool_server.enabled {
+            anyhow::bail!(
+                "nothing to do: set default_provider and a [providers.*] section (LASEASK chat), or [tool_server] enabled = true (tools for Open WebUI)"
+            );
+        }
+        if cfg.openwebui.enabled && !chat_configured {
+            anyhow::bail!("[openwebui] enabled = true needs default_provider and [providers.*]");
+        }
+        if cfg.tool_server.enabled && cfg.tool_server.api_key.trim().len() < 16 {
+            anyhow::bail!("[tool_server] enabled = true requires an api_key of at least 16 characters");
+        }
         if cfg.agent.max_turns < 2 {
             anyhow::bail!("[agent] max_turns must be at least 2");
         }
         if cfg.tls.enabled &&(cfg.tls.cert_path.is_empty() || cfg.tls.key_path.is_empty()) {
             anyhow::bail!("[tls] enabled = true requires both cert_path and key_path to be set");
+        }
+        if cfg.openwebui.enabled {
+            if cfg.openwebui.api_key.trim().len() < 16 {
+                anyhow::bail!("[openwebui] enabled = true requires an api_key of at least 16 characters");
+            }
+            let models = cfg.openwebui.model_list();
+            for (i, m) in models.iter().enumerate() {
+                if m.id.trim().is_empty() {
+                    anyhow::bail!("[[openwebui.models]] entry {} has an empty id", i + 1);
+                }
+                if models[..i].iter().any(|other| other.id == m.id) {
+                    anyhow::bail!("[[openwebui.models]] id '{}' is used twice", m.id);
+                }
+                if let Some(p) = &m.provider {
+                    if !cfg.providers.contains_key(p) {
+                        anyhow::bail!("[[openwebui.models]] '{}' uses provider '{p}', which has no [providers.{p}] section", m.id);
+                    }
+                }
+            }
         }
         Ok(cfg)
     }

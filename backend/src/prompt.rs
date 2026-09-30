@@ -114,6 +114,20 @@ pub fn system_prompt(
     prompt
 }
 
+/// The tool part of the prompt alone (investigation rules, then each server's guide), sent as the
+/// `instructions` of the MCP tool server (tool_server.rs).
+pub fn tool_guide(servers: &[String], notes: &HashMap<String, String>) -> String {
+    let mut guide = TOOL_RULES.to_string();
+    for server in servers {
+        if let Some(g) = notes.get(server) {
+            guide.push_str(&format!(
+                "\n\nGuide for the '{server}' tools (their names start with \"{server}__\"):\n{g}"
+            ));
+        }
+    }
+    guide
+}
+
 /// e.g. "Tuesday 2026-09-29 11:04 UTC". Hand-rolled (civil-from-days) to avoid pulling in a date
 /// crate for one line.
 fn utc_now() -> String {

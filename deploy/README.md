@@ -10,6 +10,8 @@ This folder contains:
 - **`laseask.service`**: the systemd unit used by the bare-metal install. It runs
   `/opt/laseask/laseask-backend` as the `laseask` user, with `/opt/laseask/config.toml` as config.
 - **`tls/`**: optional HTTPS with a Let's Encrypt certificate (see `tls/README.md`).
+- **`openwebui/`**: the recommended install: Open WebUI as the tool, with LASEASK's tools (MCP
+  tool service, investigation prompt, MCP-only and reputation functions). See `openwebui/README.md`.
 
 The service has no login/auth: it must only be reachable from trusted machines. Restrict access at
 the firewall (network firewall and/or `ufw`), not in the app. With Docker, `ufw` does not filter

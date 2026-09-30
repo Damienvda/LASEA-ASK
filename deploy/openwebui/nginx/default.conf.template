@@ -1,0 +1,42 @@
+# Filled in by the nginx image at start-up: ${LASEASK_HOSTNAME} comes from docker-compose.yml.
+# nginx's own variables ($host, $http_upgrade...) are left alone.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+# Open WebUI
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${LASEASK_HOSTNAME};
+
+    ssl_certificate     /etc/letsencrypt/live/${LASEASK_HOSTNAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${LASEASK_HOSTNAME}/privkey.pem;
+
+    # Documents uploaded to knowledge bases.
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://open-webui:8080;
+        proxy_http_version 1.1;
+        # Open WebUI uses WebSockets (live updates, channels).
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Streamed answers must not be held back, and investigations can take many minutes.
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

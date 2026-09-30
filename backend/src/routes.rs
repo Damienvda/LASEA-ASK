@@ -129,10 +129,57 @@ fn tool_server(qualified_name: &str) -> &str {
     qualified_name.split_once("__").map_or("", |(server, _)| server)
 }
 
+/// One chat request, whichever API it came in through: the LASEASK UI's /api/chat or the
+/// OpenAI-compatible /v1/chat/completions that Open WebUI calls (openai_compat.rs).
+pub struct ChatParams {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub messages: Vec<ChatMessage>,
+    pub mcp_only: bool,
+    /// Same meaning as `ChatRequest::mcp_servers`: None = every server, empty = no tools.
+    pub mcp_servers: Option<Vec<String>>,
+    /// Leave out the LASEASK system prompt. For Open WebUI's background tasks (chat titles,
+    /// tags, follow-up suggestions), which bring their own instructions and need no tools.
+    pub bare: bool,
+}
+
+/// A chat that has started: the model actually used and the stream of normalized events.
+pub struct StartedChat {
+    pub model: String,
+    /// True when the request went through a tool-use loop (at least one tool offered).
+    pub has_tools: bool,
+    pub events: BoxStream<'static, StreamEvent>,
+}
+
 pub async fn chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, AppError> {
+    let started = start_chat(
+        &state,
+        ChatParams {
+            provider: req.provider,
+            model: req.model,
+            messages: req.messages,
+            mcp_only: req.mcp_only,
+            mcp_servers: req.mcp_servers,
+            bare: false,
+        },
+    )
+    .await?;
+
+    let sse_stream = started
+        .events
+        .map(|ev| {
+            let json = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".to_string());
+            Ok(Event::default().data(json))
+        })
+        .boxed();
+
+    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
+}
+
+pub async fn start_chat(state: &AppState, req: ChatParams) -> Result<StartedChat, AppError> {
     if req.messages.is_empty() {
         return Err(AppError::BadRequest("messages must not be empty".into()));
     }
@@ -182,19 +229,24 @@ pub async fn chat(
         .collect();
     prompt_servers.sort();
     prompt_servers.dedup();
-    let mut messages = vec![ChatMessage {
-        role: "system".into(),
-        content: prompt::system_prompt(
-            &prompt_servers,
-            &state.mcp_notes,
-            mcp_only,
-            state.config.system_prompt.as_deref(),
-        ),
-    }];
+    let mut messages = Vec::with_capacity(req.messages.len() + 1);
+    if !req.bare {
+        messages.push(ChatMessage {
+            role: "system".into(),
+            content: prompt::system_prompt(
+                &prompt_servers,
+                &state.mcp_notes,
+                mcp_only,
+                state.config.system_prompt.as_deref(),
+            ),
+        });
+    }
     messages.extend(req.messages);
+    let model_used = model.clone();
+    let tool_loop = has_tools && (provider_name == "anthropic" || openai_endpoint.is_some());
 
     let event_stream: BoxStream<'static, StreamEvent> =
-        if has_tools && (provider_name == "anthropic" || openai_endpoint.is_some()) {
+        if tool_loop {
             let (tx, rx) = mpsc::channel::<StreamEvent>(32);
             let agent_cfg = state.config.agent.clone();
 
@@ -233,14 +285,7 @@ pub async fn chat(
                 .map_err(|e| AppError::Provider(e.to_string()))?
         };
 
-    let sse_stream = event_stream
-        .map(|ev| {
-            let json = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".to_string());
-            Ok(Event::default().data(json))
-        })
-        .boxed();
-
-    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
+    Ok(StartedChat { model: model_used, has_tools: tool_loop, events: event_stream })
 }
 
 fn receiver_stream(rx: mpsc::Receiver<StreamEvent>) -> impl futures::Stream<Item = StreamEvent> {

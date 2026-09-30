@@ -15,6 +15,13 @@ The backend can also connect to **MCP servers** (e.g. a FortiAnalyzer MCP endpoi
 call their tools, the same way tools work in Claude Code. In the UI you pick the AI with a button
 and tick which MCP servers it may use.
 
+**The recommended install (since 3.0) is Open WebUI:** the tool is
+[Open WebUI](https://github.com/open-webui/open-webui), and LASEASK adds its FortiAnalyzer tools
+(filtered, results compacted), its threat-intel lookups, its investigation prompt, an "MCP only"
+button and an IP-reputation button, as an internal MCP tool service plus Open WebUI functions.
+Guide: **`deploy/openwebui/README.md`**. The sections below describe the older standalone
+LASEASK console, kept for now.
+
 ---
 
 ## Which guide do I follow?

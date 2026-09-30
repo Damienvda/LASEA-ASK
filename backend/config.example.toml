@@ -114,6 +114,60 @@ internal_domains = ["example.local"]
 # How long a result is reused before asking the services again.
 cache_hours = 24
 
+# Open WebUI as the tool (deploy/openwebui/README.md): LASEASK serves it the MCP tools on POST /mcp
+# (every [mcp.*] server with include_tools / exclude_tools / notes, result compaction per [agent]
+# max_tool_result_chars, plus "intel"). Open WebUI has the models and their keys, so in this mode
+# default_provider and [providers.*] can be left out entirely.
+[tool_server]
+enabled = false
+# Bearer token of Open WebUI's MCP connection (Admin Panel > Settings > External Tools). At least
+# 16 characters: openssl rand -hex 32
+api_key = "REPLACE-ME-WITH-A-LONG-RANDOM-SECRET"
+# Which servers to offer. Unset = every [mcp.*] server plus "intel".
+# servers = ["fortianalyzer", "intel"]
+
+# Legacy (kept for now): Open WebUI calling LASEASK's own agent as a model. Open WebUI then keeps
+# the users, conversations, knowledge bases, notes, channels and usage statistics, and sees each
+# [[openwebui.models]] entry as a model. Every request still runs through LASEASK's agent, MCP tools
+# and prompt. Open WebUI calls http://<laseask>:8787/v1 with this api_key as its OPENAI_API_KEYS.
+[openwebui]
+enabled = false
+# Long random secret, at least 16 characters (e.g. `openssl rand -hex 32`). Same value as
+# LASEASK_API_KEY in deploy/openwebui/.env.
+api_key = "REPLACE-ME-WITH-A-LONG-RANDOM-SECRET"
+# false: while tools are in use, the AI's notes between tool calls go to Open WebUI's folded
+# "Thought" block with the live tool timeline, and the reply shows only the final answer.
+# true: everything streams into the reply as it comes.
+live_answer = false
+# Language of the tool timeline in the "Thought" block: "fr" or "en".
+language = "fr"
+# Also list one model per [providers.*] ("laseask-anthropic", "laseask-openai", "laseask-mistral",
+# all tools, the provider's default_model), and accept any "<provider>/<model>" id, e.g.
+# "anthropic/claude-sonnet-5-5": add such ids in Open WebUI (Admin Panel > Settings > Connections
+# > the LASEASK connection > Model IDs) to pick any model, like the old console's model field.
+provider_models = true
+
+# The models Open WebUI offers. Without any [[openwebui.models]] block you get "laseask" (all
+# tools) and "laseask-chat" (no tools). provider / model default to default_provider and its
+# default_model; mcp_servers defaults to every [mcp.*] server plus "intel".
+[[openwebui.models]]
+id = "laseask"
+name = "LASEASK – investigation"
+
+[[openwebui.models]]
+id = "laseask-fortianalyzer"
+name = "LASEASK – FortiAnalyzer uniquement (MCP only)"
+mcp_servers = ["fortianalyzer"]
+mcp_only = true
+
+# No tools, cheap model: Open WebUI's task model (titles, tags, follow-up questions, search
+# queries), set as TASK_MODEL_EXTERNAL in deploy/openwebui/.env. Also fine for plain questions.
+[[openwebui.models]]
+id = "laseask-chat"
+name = "LASEASK – chat simple (sans outils)"
+tools = false
+model = "claude-haiku-4-5-20251001"
+
 # Optional: model prices in US dollars per million tokens, for the cost estimate under each reply.
 # One block per model name, exactly as in default_model or the UI's model field. Models without a
 # block only show token counts. cache_read / cache_write default to the input price. Check the
@@ -123,6 +177,12 @@ input = 4.0
 output = 20.0
 cache_read = 0.2
 cache_write = 5.0
+
+[pricing."claude-haiku-4-5-20251001"]
+input = 1.0
+output = 5.0
+cache_read = 0.1
+cache_write = 1.25
 
 # [pricing."mistral-large-latest"]
 # input = 0.0

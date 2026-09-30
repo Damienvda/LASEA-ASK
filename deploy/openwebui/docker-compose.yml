@@ -1,0 +1,76 @@
+﻿# Open WebUI, with LASEASK's tools. Run from this folder: docker compose up -d --build
+# See README.md next to this file.
+#
+#   browser --HTTPS 443--> nginx --> open-webui:8080 --> Claude / Mistral / GPT APIs
+#                                        |  MCP (Streamable HTTP, bearer)
+#                                        +--> laseask:8787/mcp --> FortiAnalyzer MCP, intel
+#                                        |  functions (prompt, reputation)
+#                                        +--> laseask:8787/api/prompt, /api/intel
+#
+# One tool: Open WebUI. LASEASK is an internal service: no published port, no interface of its own.
+name: laseask
+
+services:
+  laseask:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    image: laseask-backend
+    restart: unless-stopped
+    volumes:
+      # [tool_server] enabled = true, [tls] enabled = false (nginx does TLS).
+      - ../../backend/config.toml:/app/config.toml:ro
+    expose:
+      - "8787"
+    # If the MCP server's name only resolves on your internal DNS, map it here:
+    # extra_hosts:
+    #   - "mcp.example.local:192.0.2.10"
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPENWEBUI_VERSION:-main}
+    restart: unless-stopped
+    depends_on:
+      - laseask
+    environment:
+      # Shown as "LASEASK (Open WebUI)": the Open WebUI licence requires keeping its branding.
+      WEBUI_NAME: "LASEASK"
+      WEBUI_URL: "https://${LASEASK_HOSTNAME:?set LASEASK_HOSTNAME in .env}"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in .env}"
+      ENABLE_OLLAMA_API: "false"
+      # Claude, through Anthropic's OpenAI-compatible API. Add Mistral / OpenAI in Admin Panel >
+      # Settings > Connections (these variables only apply on the very first start).
+      OPENAI_API_BASE_URLS: "https://api.anthropic.com/v1"
+      OPENAI_API_KEYS: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}"
+      # Titles, tags, follow-up questions and search queries: a cheap model.
+      TASK_MODEL_EXTERNAL: "${TASK_MODEL:-claude-haiku-4-5-20251001}"
+      # Accounts: the first one created is the admin; later sign-ups wait for the admin's approval.
+      ENABLE_SIGNUP: "true"
+      DEFAULT_USER_ROLE: "pending"
+      ENABLE_CHANNELS: "true"
+      ENABLE_NOTES: "true"
+      # Investigations can run for many minutes.
+      AIOHTTP_CLIENT_TIMEOUT: "3600"
+    volumes:
+      - open-webui:/app/backend/data
+    expose:
+      - "8080"
+
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    depends_on:
+      - open-webui
+    environment:
+      LASEASK_HOSTNAME: "${LASEASK_HOSTNAME}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # The official image fills ${LASEASK_HOSTNAME} in and writes it to /etc/nginx/conf.d/.
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # Certificates from deploy/tls/request-cert.sh (certbot on the host).
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+
+volumes:
+  # Users, conversations, knowledge bases, notes, channels, settings, functions. Back it up.
+  open-webui:

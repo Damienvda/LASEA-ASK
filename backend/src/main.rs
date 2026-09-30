@@ -4,11 +4,13 @@ mod config;
 mod error;
 mod intel;
 mod mcp;
+mod openai_compat;
 mod prompt;
 mod providers;
 mod routes;
 mod state;
 mod tool_result;
+mod tool_server;
 
 use agent::ToolSpec;
 use axum::routing::{get, post};
@@ -58,10 +60,42 @@ async fn main() -> anyhow::Result<()> {
         mcp_notes: Arc::new(mcp_notes),
     };
 
-    let app = Router::new()
+    let mut router: Router<AppState> = Router::new()
         .route("/api/providers", get(routes::list_providers))
         .route("/api/chat", post(routes::chat))
         .route("/api/intel", get(routes::intel_lookup))
+        .route("/api/prompt", get(tool_server::system_prompt));
+    // Open WebUI is the tool: LASEASK serves it the MCP tools (see tool_server.rs).
+    if state.config.tool_server.enabled {
+        router = router.route("/mcp", post(tool_server::mcp_post).get(tool_server::mcp_get));
+        tracing::info!(
+            "MCP tool server enabled on /mcp: {} tool(s)",
+            state
+                .mcp_tools
+                .iter()
+                .filter(|t| state.config.tool_server.serves(t.qualified_name.split("__").next().unwrap_or("")))
+                .count()
+        );
+    }
+    // Open WebUI in front: LASEASK answers as an OpenAI-compatible API (see openai_compat.rs).
+    if state.config.openwebui.enabled {
+        router = router
+            .route("/v1/models", get(openai_compat::list_models))
+            .route("/v1/chat/completions", post(openai_compat::chat_completions));
+        tracing::info!(
+            "Open WebUI API enabled on /v1, models: {}",
+            state
+                .config
+                .openwebui
+                .all_models(&state.config.providers)
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    let app = router
         .with_state(state)
         .fallback_service(ServeDir::new(&static_dir))
         .layer(CorsLayer::permissive())

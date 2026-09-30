@@ -592,8 +592,8 @@ pub async fn run_tool(
 
 /// Routes a "{server}__{tool}" call to the right MCP server and returns the text to feed back to
 /// the model, and whether the call succeeded. Failures come back as text too, so the model can
-/// see and react to them.
-async fn call_mcp_tool(
+/// see and react to them. Also used by the MCP tool server for Open WebUI (tool_server.rs).
+pub(crate) async fn call_mcp_tool(
     qualified_name: &str,
     input: Value,
     mcp_clients: &HashMap<String, Arc<McpClient>>,
